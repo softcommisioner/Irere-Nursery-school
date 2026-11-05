@@ -1,0 +1,6 @@
+{
+  "name": "Irere Nursery Digital Management System",
+  "description": "Full-Stack System Architecture, Relational Database Schema, and Interactive Role-Based Management Portal for Irere Nursery School in Kinyinya, Gasabo, Kigali.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

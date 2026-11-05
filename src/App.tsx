@@ -1,0 +1,686 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  CurriculumMaterial,
+  FeePayment,
+  LedgerEntry,
+  ParentFeedbackMessage,
+  SchoolClass,
+  Student,
+  StudentAttendanceRecord,
+  StudentMilestoneEvaluation,
+  TeacherAttendanceRecord,
+  User,
+  UserRole
+} from './types';
+import { SCHOOL_INFO } from './config/school';
+import { HERO_SLIDES, HeroSlide } from './config/heroImages';
+import { SESSION_USER, TEACHER_SESSION } from './config/session';
+import * as api from './services/api';
+import {
+  SEED_CLASSES,
+  SEED_CURRICULUM,
+  SEED_EVALUATIONS,
+  SEED_FEEDBACK,
+  SEED_LEDGER,
+  SEED_PAYMENTS,
+  SEED_STAFF,
+  SEED_STUDENT_ATTENDANCE,
+  SEED_STUDENTS,
+  SEED_TEACHER_ATTENDANCE
+} from './data/seed';
+import { generateId, generateRegistrationNumber } from './utils/generators';
+import { LandingHero } from './components/LandingHero';
+import { RoleSwitcher } from './components/RoleSwitcher';
+import { HeadmasterPortal } from './components/HeadmasterPortal';
+import { AccountantPortal } from './components/AccountantPortal';
+import { TeacherPortal } from './components/TeacherPortal';
+import { ParentPortal } from './components/ParentPortal';
+import { SponsorPortal } from './components/SponsorPortal';
+import { ReadOnlyBadge } from './components/ui';
+import {
+  GraduationCap,
+  Home,
+  AlertCircle,
+  RefreshCw,
+  Loader2
+} from 'lucide-react';
+
+type AppView = 'LANDING' | 'PORTALS';
+
+export default function App() {
+  const [view, setView] = useState<AppView>('LANDING');
+  const [activeRole, setActiveRole] = useState<UserRole>('HEADMASTER');
+  const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(HERO_SLIDES);
+
+  // All data starts empty and is loaded from the backend. If the API is not
+  // reachable, the app falls back to local seed data so every portal stays
+  // fully interactive (see `usingFallback`).
+  const [classes, setClasses] = useState<SchoolClass[]>([]);
+  const [students, setStudents] = useState<Student[]>([]);
+  const [staff, setStaff] = useState<User[]>([]);
+  const [teacherAttendance, setTeacherAttendance] = useState<TeacherAttendanceRecord[]>([]);
+  const [studentAttendance, setStudentAttendance] = useState<StudentAttendanceRecord[]>([]);
+  const [payments, setPayments] = useState<FeePayment[]>([]);
+  const [ledger, setLedger] = useState<LedgerEntry[]>([]);
+  const [curriculum, setCurriculum] = useState<CurriculumMaterial[]>([]);
+  const [feedbacks, setFeedbacks] = useState<ParentFeedbackMessage[]>([]);
+  const [evaluations, setEvaluations] = useState<StudentMilestoneEvaluation[]>([]);
+
+  const [loading, setLoading] = useState(true);
+  const [usingFallback, setUsingFallback] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const [
+        classList,
+        studentList,
+        staffList,
+        teacherAtt,
+        studentAtt,
+        paymentList,
+        ledgerList,
+        curriculumList,
+        feedbackList,
+        evaluationList
+      ] = await Promise.all([
+        api.getClasses(),
+        api.getStudents(),
+        api.getStaff(),
+        api.getTeacherAttendance(),
+        api.getStudentAttendance(),
+        api.getFeePayments(),
+        api.getLedger(),
+        api.getCurriculum(),
+        api.getFeedback(),
+        api.getEvaluations()
+      ]);
+      setClasses(classList);
+      setStudents(studentList);
+      setStaff(staffList);
+      setTeacherAttendance(teacherAtt);
+      setStudentAttendance(studentAtt);
+      setPayments(paymentList);
+      setLedger(ledgerList);
+      setCurriculum(curriculumList);
+      setFeedbacks(feedbackList);
+      setEvaluations(evaluationList);
+      setUsingFallback(false);
+    } catch (err) {
+      // Graceful fallback: keep the UI fully usable with local data instead of
+      // showing a dead "could not load" screen.
+      setClasses(SEED_CLASSES);
+      setStudents(SEED_STUDENTS);
+      setStaff(SEED_STAFF);
+      setTeacherAttendance(SEED_TEACHER_ATTENDANCE);
+      setStudentAttendance(SEED_STUDENT_ATTENDANCE);
+      setPayments(SEED_PAYMENTS);
+      setLedger(SEED_LEDGER);
+      setCurriculum(SEED_CURRICULUM);
+      setFeedbacks(SEED_FEEDBACK);
+      setEvaluations(SEED_EVALUATIONS);
+      setUsingFallback(true);
+      setLoadError(err instanceof Error ? err.message : 'Backend unavailable.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const selectedStudent: Student | null = students[0] ?? null;
+  const selectedEvaluation =
+    evaluations.find((e) => e.studentId === selectedStudent?.id) ?? null;
+
+  // Hero image management — local file selection with object-URL previews.
+  const heroObjectUrlsRef = useRef<string[]>([]);
+
+  const revokeHeroObjectUrls = useCallback(() => {
+    heroObjectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    heroObjectUrlsRef.current = [];
+  }, []);
+
+  const handleSelectHeroImages = useCallback(
+    (files: File[]) => {
+      const images = files.filter((file) => file.type.startsWith('image/'));
+      if (images.length === 0) return;
+      revokeHeroObjectUrls();
+      const urls = images.map((file) => URL.createObjectURL(file));
+      heroObjectUrlsRef.current = urls;
+      setHeroSlides(
+        images.map((file, i) => ({
+          id: `hero-${i}-${Date.now()}`,
+          url: urls[i],
+          alt: file.name,
+          title: file.name.replace(/\.[^.]+$/, ''),
+          subtitle: 'Loaded from your device'
+        }))
+      );
+    },
+    [revokeHeroObjectUrls]
+  );
+
+  const handleResetHeroSlides = useCallback(() => {
+    revokeHeroObjectUrls();
+    setHeroSlides(HERO_SLIDES);
+  }, [revokeHeroObjectUrls]);
+
+  useEffect(() => () => revokeHeroObjectUrls(), [revokeHeroObjectUrls]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Data mutations — each tries the API first, then falls back to local     */
+  /* state when the backend is unavailable.                                  */
+  /* ---------------------------------------------------------------------- */
+
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  const nextRegNumber = () => {
+    const nums = students
+      .map((s) => {
+        const match = s.regNumber.match(/(\d+)$/);
+        return match ? parseInt(match[1], 10) : 0;
+      })
+      .filter((n) => Number.isFinite(n));
+    const next = (nums.length ? Math.max(...nums) : 0) + 1;
+    return generateRegistrationNumber(next, new Date().getFullYear());
+  };
+
+  const handleReviewAttendance = async (id: string, status: 'APPROVED' | 'REJECTED') => {
+    setActionError(null);
+    const apply = () =>
+      setTeacherAttendance((prev) =>
+        prev.map((rec) =>
+          rec.id === id
+            ? {
+                ...rec,
+                status,
+                reviewedBy: SESSION_USER.name,
+                reviewedAt: new Date().toISOString(),
+                headmasterRemarks:
+                  status === 'APPROVED' ? 'Attendance verified and approved.' : undefined,
+                rejectionReason:
+                  status === 'REJECTED' ? 'Check-in details could not be verified.' : undefined
+              }
+            : rec
+        )
+      );
+
+    if (!usingFallback) {
+      try {
+        const updated = await api.reviewTeacherAttendance(id, {
+          status,
+          reviewedBy: SESSION_USER.name,
+          headmasterRemarks:
+            status === 'APPROVED' ? 'Attendance verified and approved.' : undefined,
+          rejectionReason:
+            status === 'REJECTED' ? 'Check-in details could not be verified.' : undefined
+        });
+        setTeacherAttendance((prev) =>
+          prev.map((rec) => (rec.id === id ? { ...rec, ...updated } : rec))
+        );
+        return;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    apply();
+  };
+
+  const handleTeacherCheckIn = async (notes: string) => {
+    setActionError(null);
+    if (!usingFallback) {
+      try {
+        const created = await api.createTeacherCheckIn({
+          teacherId: TEACHER_SESSION.id,
+          teacherName: TEACHER_SESSION.name,
+          date: today(),
+          checkInTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          notes: notes || undefined
+        });
+        setTeacherAttendance((prev) => [created, ...prev]);
+        return;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    setTeacherAttendance((prev) => [
+      {
+        id: generateId('att'),
+        teacherId: TEACHER_SESSION.id,
+        teacherName: TEACHER_SESSION.name,
+        date: today(),
+        checkInTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: 'PENDING',
+        notes: notes || undefined
+      },
+      ...prev
+    ]);
+  };
+
+  const handleSaveStudentAttendance = async (
+    records: Omit<StudentAttendanceRecord, 'id'>[]
+  ) => {
+    setActionError(null);
+    if (!usingFallback) {
+      try {
+        const saved = await api.saveStudentAttendance(records);
+        setStudentAttendance((prev) => {
+          const remaining = prev.filter(
+            (r) => !saved.some((s) => s.studentId === r.studentId && s.date === r.date)
+          );
+          return [...saved, ...remaining];
+        });
+        return;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    const withIds = records.map((r) => ({ ...r, id: generateId('satt') }));
+    setStudentAttendance((prev) => {
+      const remaining = prev.filter(
+        (r) => !withIds.some((s) => s.studentId === r.studentId && s.date === r.date)
+      );
+      return [...withIds, ...remaining];
+    });
+  };
+
+  const handleUploadCurriculum = async (input: api.CurriculumUploadInput) => {
+    setActionError(null);
+    if (!usingFallback) {
+      try {
+        const created = await api.uploadCurriculum(input);
+        setCurriculum((prev) => [created, ...prev]);
+        return;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    setCurriculum((prev) => [
+      { ...input, id: generateId('cur'), uploadDate: today() },
+      ...prev
+    ]);
+  };
+
+  const handleSubmitFeedback = async (subject: string, message: string) => {
+    if (!selectedStudent) return;
+    setActionError(null);
+    if (!usingFallback) {
+      try {
+        const created = await api.submitFeedback({
+          parentId: selectedStudent.parentEmail || selectedStudent.id,
+          parentName: selectedStudent.parentName,
+          studentName: `${selectedStudent.firstName} ${selectedStudent.lastName}`,
+          studentClass: selectedStudent.className,
+          subject,
+          message
+        });
+        setFeedbacks((prev) => [created, ...prev]);
+        return;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    setFeedbacks((prev) => [
+      {
+        id: generateId('fb'),
+        parentId: selectedStudent.parentEmail || selectedStudent.id,
+        parentName: selectedStudent.parentName,
+        studentName: `${selectedStudent.firstName} ${selectedStudent.lastName}`,
+        studentClass: selectedStudent.className,
+        subject,
+        message,
+        createdAt: new Date().toISOString(),
+        status: 'PENDING_REPLY'
+      },
+      ...prev
+    ]);
+  };
+
+  const handleRecordPayment = async (input: api.RecordPaymentInput) => {
+    setActionError(null);
+    if (!usingFallback) {
+      try {
+        const created = await api.recordPayment(input);
+        setPayments((prev) => [created, ...prev]);
+        setStudents((prev) =>
+          prev.map((s) => {
+            if (s.id !== created.studentId) return s;
+            const paid = s.paidAmount + created.amount;
+            return { ...s, paidAmount: paid, balance: Math.max(0, s.tuitionFeeTerm - paid) };
+          })
+        );
+        setLedger((prev) => [
+          {
+            id: `ledger-${created.id}`,
+            entryDate: created.paymentDate,
+            description: `Tuition payment: ${created.studentName} (${created.studentReg})`,
+            type: 'INCOME',
+            category: 'TUITION_FEE',
+            amount: created.amount,
+            referenceDocNumber: created.receiptNumber,
+            recordedBy: created.receivedBy,
+            paymentMethod: created.paymentMethod
+          },
+          ...prev
+        ]);
+        return;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    const receiptNumber = `RCP-${new Date().getFullYear()}-${String(
+      payments.length + 1
+    ).padStart(4, '0')}`;
+    const created: FeePayment = {
+      ...input,
+      id: generateId('pay'),
+      receiptNumber,
+      status: 'VERIFIED'
+    };
+    setPayments((prev) => [created, ...prev]);
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id !== created.studentId) return s;
+        const paid = s.paidAmount + created.amount;
+        return { ...s, paidAmount: paid, balance: Math.max(0, s.tuitionFeeTerm - paid) };
+      })
+    );
+    setLedger((prev) => [
+      {
+        id: generateId('led'),
+        entryDate: created.paymentDate,
+        description: `Tuition payment: ${created.studentName} (${created.studentReg})`,
+        type: 'INCOME',
+        category: 'TUITION_FEE',
+        amount: created.amount,
+        referenceDocNumber: receiptNumber,
+        recordedBy: created.receivedBy,
+        paymentMethod: created.paymentMethod
+      },
+      ...prev
+    ]);
+  };
+
+  const handleAddLedgerEntry = async (input: api.LedgerEntryInput) => {
+    setActionError(null);
+    if (!usingFallback) {
+      try {
+        const created = await api.createLedgerEntry(input);
+        setLedger((prev) => [created, ...prev]);
+        return;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    setLedger((prev) => [{ ...input, id: generateId('led') }, ...prev]);
+  };
+
+  /* ------------------------- Headmaster management ---------------------- */
+
+  const handleCreateStaff = async (input: api.CreateStaffInput): Promise<User> => {
+    setActionError(null);
+    if (!usingFallback) {
+      try {
+        const created = await api.createStaff(input);
+        setStaff((prev) => [...prev, created]);
+        return created;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    const created: User = {
+      id: generateId('staff'),
+      name: input.name,
+      email: input.email,
+      phone: input.phone ?? '',
+      role: input.role,
+      title: input.title
+    };
+    setStaff((prev) => [...prev, created]);
+    return created;
+  };
+
+  const handleRegisterStudent = async (
+    input: Omit<api.CreateStudentInput, 'regNumber'>
+  ): Promise<Student> => {
+    setActionError(null);
+    const regNumber = nextRegNumber();
+    if (!usingFallback) {
+      try {
+        const created = await api.createStudent({ ...input, regNumber });
+        setStudents((prev) => [...prev, created]);
+        setClasses((prev) =>
+          prev.map((c) =>
+            c.id === created.classId ? { ...c, studentCount: c.studentCount + 1 } : c
+          )
+        );
+        return created;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    const created: Student = {
+      ...input,
+      id: generateId('stu'),
+      regNumber,
+      paidAmount: 0,
+      balance: input.tuitionFeeTerm,
+      emergencyContact: ''
+    };
+    setStudents((prev) => [...prev, created]);
+    setClasses((prev) =>
+      prev.map((c) => (c.id === created.classId ? { ...c, studentCount: c.studentCount + 1 } : c))
+    );
+    return created;
+  };
+
+  const handleCreateClass = async (input: api.CreateClassInput): Promise<SchoolClass> => {
+    setActionError(null);
+    if (!usingFallback) {
+      try {
+        const created = await api.createClass(input);
+        setClasses((prev) => [...prev, created]);
+        return created;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    const created: SchoolClass = { ...input, id: generateId('cls'), studentCount: 0 };
+    setClasses((prev) => [...prev, created]);
+    return created;
+  };
+
+  /* ---------------------------------------------------------------------- */
+
+  if (view === 'LANDING') {
+    return (
+      <LandingHero
+        slides={heroSlides}
+        onEnter={() => setView('PORTALS')}
+        onSelectFiles={handleSelectHeroImages}
+        onResetSlides={handleResetHeroSlides}
+      />
+    );
+  }
+
+  const renderPortal = () => {
+    switch (activeRole) {
+      case 'HEADMASTER':
+        return (
+          <HeadmasterPortal
+            classes={classes}
+            students={students}
+            staff={staff}
+            teacherAttendance={teacherAttendance}
+            payments={payments}
+            ledger={ledger}
+            onApprove={(id) => handleReviewAttendance(id, 'APPROVED')}
+            onReject={(id) => handleReviewAttendance(id, 'REJECTED')}
+            onCreateStaff={handleCreateStaff}
+            onRegisterStudent={handleRegisterStudent}
+            onCreateClass={handleCreateClass}
+          />
+        );
+      case 'ACCOUNTANT':
+        return (
+          <AccountantPortal
+            classes={classes}
+            students={students}
+            payments={payments}
+            ledger={ledger}
+            onRecordPayment={handleRecordPayment}
+            onAddLedgerEntry={handleAddLedgerEntry}
+          />
+        );
+      case 'TEACHER':
+        return (
+          <TeacherPortal
+            teacherId={TEACHER_SESSION.id}
+            teacherName={TEACHER_SESSION.name}
+            classes={classes}
+            students={students}
+            teacherAttendance={teacherAttendance}
+            studentAttendance={studentAttendance}
+            curriculum={curriculum}
+            onCheckIn={handleTeacherCheckIn}
+            onSaveStudentAttendance={handleSaveStudentAttendance}
+            onUploadCurriculum={handleUploadCurriculum}
+          />
+        );
+      case 'PARENT':
+        return (
+          <ParentPortal
+            student={selectedStudent}
+            curriculum={curriculum}
+            feedbacks={feedbacks}
+            evaluation={selectedEvaluation}
+            onSubmitFeedback={handleSubmitFeedback}
+          />
+        );
+      case 'SPONSOR':
+        return (
+          <SponsorPortal
+            classes={classes}
+            students={students}
+            staff={staff}
+            teacherAttendance={teacherAttendance}
+            studentAttendance={studentAttendance}
+            payments={payments}
+            ledger={ledger}
+            curriculum={curriculum}
+            evaluations={evaluations}
+          />
+        );
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col">
+      <header className="sticky top-0 z-40 bg-white border-b border-slate-200">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6">
+          <div className="flex items-center justify-between gap-4 h-16">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="w-10 h-10 shrink-0 rounded-xl bg-orange-500 flex items-center justify-center shadow-sm">
+                <GraduationCap className="w-6 h-6 text-white" />
+              </span>
+              <div className="leading-tight min-w-0">
+                <p className="text-sm font-extrabold text-slate-800 truncate">{SCHOOL_INFO.name}</p>
+                <p className="text-[11px] text-slate-500 truncate">
+                  {SCHOOL_INFO.district} · {SCHOOL_INFO.city}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {activeRole === 'SPONSOR' && (
+                <span className="hidden sm:inline-flex">
+                  <ReadOnlyBadge />
+                </span>
+              )}
+              <button
+                onClick={() => setView('LANDING')}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                <Home className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Home</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-slate-100">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2">
+            <RoleSwitcher activeRole={activeRole} onSelectRole={setActiveRole} />
+          </div>
+        </div>
+      </header>
+
+      <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-4">
+        {actionError && (
+          <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span className="flex-1">{actionError}</span>
+            <button
+              onClick={() => setActionError(null)}
+              className="font-semibold text-rose-700 hover:text-rose-900"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-24 text-slate-500">
+            <Loader2 className="w-8 h-8 text-orange-500 animate-spin" />
+            <p className="text-sm">Loading school data…</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {usingFallback && (
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                <div className="flex items-start gap-2 flex-1">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>
+                    <span className="font-bold">Offline mode.</span> The backend is not reachable
+                    {loadError ? ` (${loadError})` : ''}. Showing local demo data — your changes are
+                    kept in this browser session and every portal remains fully usable.
+                  </span>
+                </div>
+                <button
+                  onClick={loadData}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-white bg-orange-500 hover:bg-orange-600 transition-colors shrink-0"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Reconnect
+                </button>
+              </div>
+            )}
+
+            {activeRole === 'SPONSOR' && (
+              <div className="sm:hidden">
+                <ReadOnlyBadge />
+              </div>
+            )}
+            {renderPortal()}
+          </div>
+        )}
+      </main>
+
+      <footer className="bg-white border-t border-slate-200">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] text-slate-500">
+          <span className="font-semibold text-slate-700">{SCHOOL_INFO.name}</span>
+          <span>
+            {SCHOOL_INFO.village}, {SCHOOL_INFO.sector}, {SCHOOL_INFO.district}
+          </span>
+        </div>
+      </footer>
+    </div>
+  );
+}
