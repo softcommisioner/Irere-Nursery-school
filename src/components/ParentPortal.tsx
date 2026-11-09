@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   CurriculumMaterial,
   ParentFeedbackMessage,
@@ -18,7 +18,9 @@ import {
   Loader2,
   UserX,
   Award,
-  Heart
+  Heart,
+  Hash,
+  Search
 } from 'lucide-react';
 import { Badge, EmptyState, ProgressBar, SectionCard, StatCard, Tabs } from './ui';
 
@@ -28,6 +30,7 @@ interface ParentPortalProps {
   feedbacks: ParentFeedbackMessage[];
   evaluation: StudentMilestoneEvaluation | null;
   onSubmitFeedback: (subject: string, message: string) => Promise<void>;
+  onLookupStudent: (registrationNumber: string) => boolean;
 }
 
 type Tab = 'PERFORMANCE' | 'FEES' | 'CURRICULUM' | 'FEEDBACK';
@@ -49,7 +52,8 @@ export const ParentPortal: React.FC<ParentPortalProps> = ({
   curriculum,
   feedbacks,
   evaluation,
-  onSubmitFeedback
+  onSubmitFeedback,
+  onLookupStudent
 }) => {
   const [tab, setTab] = useState<Tab>('PERFORMANCE');
   const [subject, setSubject] = useState('');
@@ -57,6 +61,28 @@ export const ParentPortal: React.FC<ParentPortalProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [lookupReg, setLookupReg] = useState('');
+  const [lookupError, setLookupError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (student?.regNumber) setLookupReg(student.regNumber);
+  }, [student?.regNumber]);
+
+  const handleLookup = (e: React.FormEvent) => {
+    e.preventDefault();
+    setLookupError(null);
+    const reg = lookupReg.trim();
+    if (!reg) {
+      setLookupError('Enter your child’s registration number / ID to continue.');
+      return;
+    }
+    const found = onLookupStudent(reg);
+    if (!found) {
+      setLookupError('No pupil was found with that registration number. Please check and try again.');
+      return;
+    }
+    setTab('PERFORMANCE');
+  };
 
   const termFee = student?.tuitionFeeTerm ?? 0;
   const paidAmount = student?.paidAmount ?? 0;
@@ -121,9 +147,47 @@ export const ParentPortal: React.FC<ParentPortalProps> = ({
       ) : (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex items-center gap-3">
           <UserX className="w-6 h-6 text-slate-400" />
-          <p className="text-sm text-slate-500">No student is linked to this account yet.</p>
+          <p className="text-sm text-slate-500">
+            No pupil is linked yet. Enter your child’s registration number below to review their
+            performance.
+          </p>
         </div>
       )}
+
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5">
+        <div className="flex items-start gap-3">
+          <span className="w-10 h-10 shrink-0 rounded-lg bg-orange-50 text-orange-600 flex items-center justify-center">
+            <Hash className="w-5 h-5" />
+          </span>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-slate-800">Review a pupil record</p>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Enter the child’s Registration Number / ID to view their academic performance.
+            </p>
+            <form onSubmit={handleLookup} className="mt-3 flex flex-col sm:flex-row gap-2">
+              <input
+                value={lookupReg}
+                onChange={(e) => setLookupReg(e.target.value)}
+                placeholder="e.g. IRR-2026-001"
+                className={`${inputClass} font-mono uppercase sm:flex-1`}
+              />
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-bold text-white bg-orange-500 hover:bg-orange-600 rounded-lg transition-colors shrink-0"
+              >
+                <Search className="w-3.5 h-3.5" />
+                Review Performance
+              </button>
+            </form>
+            {lookupError && (
+              <p className="flex items-center gap-1.5 mt-2 text-[11px] text-rose-700">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                {lookupError}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
 
       <Tabs
         active={tab}

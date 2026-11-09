@@ -12,21 +12,27 @@ import {
   User,
   UserRole
 } from '../types';
+import {
+  SupabaseError,
+  isMissingTableError,
+  supabaseRest
+} from './supabase';
 
 /**
  * API service layer.
  *
- * All backend access goes through this module. Point it at your real backend
- * (or Supabase / a Supabase Edge Function / PostgREST endpoint) with the
- * `VITE_API_BASE_URL` environment variable:
+ * Every call now goes straight to Supabase through its PostgREST API
+ * (`https://<project-ref>.supabase.co/rest/v1`). The old hard-coded `/api`
+ * routes that only existed in local development (and returned `NOT_FOUND` on
+ * Vercel) have been removed.
  *
- *   VITE_API_BASE_URL=https://<project-ref>.supabase.co/rest/v1
+ * Environment variables (see `.env.example`):
+ *   VITE_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL
+ *   VITE_SUPABASE_ANON_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY
  *
- * If you prefer the official Supabase SDK, install `@supabase/supabase-js` and
- * swap the `request()` implementation for `supabase.from(...)` calls — the
- * exported function signatures below can stay identical.
+ * If Supabase is unreachable or not configured, the exported functions throw a
+ * descriptive `ApiError` and `App.tsx` keeps the UI usable with local data.
  */
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
 export class ApiError extends Error {
   status: number;
@@ -38,81 +44,185 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options.headers ?? {})
-      },
-      ...options
-    });
-  } catch {
-    throw new ApiError('Unable to reach the server. Please check your connection.', 0);
-  }
+/* -------------------------------------------------------------------------- */
+/* Column helpers (Supabase convention is snake_case)                         */
+/* -------------------------------------------------------------------------- */
 
-  const raw = await response.text();
-
-  if (!response.ok) {
-    throw new ApiError(
-      extractErrorMessage(raw) || `Request failed with status ${response.status}`,
-      response.status
-    );
-  }
-
-  if (response.status === 204 || raw.trim() === '') {
-    return undefined as T;
-  }
-
-  const contentType = response.headers.get('content-type') ?? '';
-
-  // Guard against non-JSON payloads (e.g. an SPA index.html returned with a 200
-  // for an unmatched `/api/...` route). Never let a raw `JSON.parse` SyntaxError
-  // escape — raise a descriptive ApiError the UI can fall back from.
-  if (!contentType.toLowerCase().includes('json') && looksLikeHtml(raw)) {
-    throw new ApiError(
-      'The API endpoint returned HTML instead of JSON. The backend is not available.',
-      response.status
-    );
-  }
-
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    throw new ApiError('Received a malformed response from the server.', response.status);
-  }
+function camelToSnake(key: string): string {
+  return key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`);
 }
 
-function looksLikeHtml(text: string): boolean {
-  const head = text.trimStart().slice(0, 32).toLowerCase();
-  return head.startsWith('<!doctype') || head.startsWith('<html') || head.startsWith('<?xml');
+function snakeToCamel(key: string): string {
+  return key.replace(/_([a-z0-9])/g, (_, char: string) => char.toUpperCase());
 }
 
-function extractErrorMessage(raw: string): string {
-  if (!raw) return '';
-  try {
-    const parsed = JSON.parse(raw) as { message?: string; error?: string; detail?: string };
-    return parsed.message ?? parsed.error ?? parsed.detail ?? '';
-  } catch {
-    return looksLikeHtml(raw) ? 'The backend is not available.' : raw.slice(0, 200);
+function toRow(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(toRow);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [camelToSnake(key), toRow(entry)])
+    );
   }
+  return value;
+}
+
+function fromRow<T>(value: unknown): T {
+  if (Array.isArray(value)) return value.map((entry) => fromRow(entry)) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [snakeToCamel(key), fromRow(entry)])
+    ) as T;
+  }
+  return value as T;
+}
+
+function toApiError(error: unknown): ApiError {
+  if (error instanceof ApiError) return error;
+  if (error instanceof SupabaseError) return new ApiError(error.message, error.status);
+  if (error instanceof Error) return new ApiError(error.message, 0);
+  return new ApiError('An unexpected error occurred while talking to Supabase.', 0);
+}
+
+function fallbackId(prefix: string): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 /* -------------------------------------------------------------------------- */
-/* Classes & students                                                          */
+/* Table resolution                                                           */
 /* -------------------------------------------------------------------------- */
 
-export function getClasses(): Promise<SchoolClass[]> {
-  return request<SchoolClass[]>('/classes');
+type TableGroup = keyof typeof TABLE_CANDIDATES;
+
+const TABLE_CANDIDATES = {
+  classes: ['classes', 'school_classes'],
+  students: ['students'],
+  staff: ['staff', 'users', 'profiles'],
+  teacherAttendance: [
+    'teacher_attendance',
+    'teacher_attendance_records',
+    'staff_attendance',
+    'attendance_records'
+  ],
+  studentAttendance: [
+    'student_attendance',
+    'student_attendance_records',
+    'attendance_records'
+  ],
+  payments: ['payments', 'fee_payments'],
+  ledger: ['ledger', 'ledger_entries', 'financial_ledger'],
+  curriculum: ['curriculum', 'curriculum_materials'],
+  evaluations: ['evaluations', 'student_milestone_evaluations'],
+  feedback: ['feedback', 'parent_feedback', 'parent_feedback_messages']
+} as const;
+
+const resolvedTables = new Map<TableGroup, string>();
+
+interface TableRequestOptions {
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  query?: string;
+  body?: unknown;
+  prefer?: string;
+  /** Reads tolerate a missing table and return an empty result instead. */
+  allowMissing?: boolean;
 }
 
-export function getStudents(): Promise<Student[]> {
-  return request<Student[]>('/students');
+async function tableRequest<T>(
+  group: TableGroup,
+  options: TableRequestOptions = {}
+): Promise<T> {
+  const cached = resolvedTables.get(group);
+  const candidates = cached
+    ? [cached, ...TABLE_CANDIDATES[group].filter((name) => name !== cached)]
+    : [...TABLE_CANDIDATES[group]];
+
+  let lastError: unknown = null;
+
+  for (const table of candidates) {
+    try {
+      const result = await supabaseRest<T>(`/${table}${options.query ?? ''}`, {
+        method: options.method ?? 'GET',
+        body: options.body === undefined ? undefined : JSON.stringify(toRow(options.body)),
+        headers: options.prefer ? { Prefer: options.prefer } : undefined
+      });
+      resolvedTables.set(group, table);
+      return result;
+    } catch (error) {
+      lastError = error;
+      if (isMissingTableError(error)) {
+        continue;
+      }
+      throw toApiError(error);
+    }
+  }
+
+  if (options.allowMissing) {
+    console.warn(
+      `[api] No Supabase table found for "${group}". Tried: ${candidates.join(', ')}.`
+    );
+    return (options.method === 'GET' ? [] : undefined) as T;
+  }
+
+  throw toApiError(lastError);
 }
 
-export function getStudent(studentId: string): Promise<Student> {
-  return request<Student>(`/students/${studentId}`);
+async function readList<T>(group: TableGroup): Promise<T[]> {
+  const rows = await tableRequest<unknown[]>(group, {
+    query: '?select=*',
+    allowMissing: true
+  });
+  return fromRow<T[]>(rows ?? []);
+}
+
+async function insertOne<T>(group: TableGroup, payload: unknown): Promise<T> {
+  const rows = await tableRequest<unknown[]>(group, {
+    method: 'POST',
+    body: payload,
+    prefer: 'return=representation'
+  });
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  return fromRow<T>(row);
+}
+
+async function patchOne<T>(
+  group: TableGroup,
+  id: string,
+  payload: unknown
+): Promise<T> {
+  const rows = await tableRequest<unknown[]>(group, {
+    method: 'PATCH',
+    query: `?id=eq.${encodeURIComponent(id)}`,
+    body: payload,
+    prefer: 'return=representation'
+  });
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  return fromRow<T>(row);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Classes & students                                                         */
+/* -------------------------------------------------------------------------- */
+
+export async function getClasses(): Promise<SchoolClass[]> {
+  return readList<SchoolClass>('classes');
+}
+
+export async function getStudents(): Promise<Student[]> {
+  return readList<Student>('students');
+}
+
+export async function getStudent(studentId: string): Promise<Student> {
+  const rows = await tableRequest<unknown[]>('students', {
+    query: `?select=*&id=eq.${encodeURIComponent(studentId)}`
+  });
+  const list = fromRow<Student[]>(rows ?? []);
+  const found = list[0];
+  if (!found) {
+    throw new ApiError('Student not found.', 404);
+  }
+  return found;
 }
 
 export interface CreateStudentInput {
@@ -130,19 +240,23 @@ export interface CreateStudentInput {
   tuitionFeeTerm: number;
 }
 
-export function createStudent(input: CreateStudentInput): Promise<Student> {
-  return request<Student>('/students', {
-    method: 'POST',
-    body: JSON.stringify(input)
-  });
+export async function createStudent(input: CreateStudentInput): Promise<Student> {
+  const created = await insertOne<Student>('students', input);
+  return {
+    ...created,
+    id: created.id ?? fallbackId('stu'),
+    paidAmount: created.paidAmount ?? 0,
+    balance: created.balance ?? input.tuitionFeeTerm,
+    emergencyContact: created.emergencyContact ?? ''
+  };
 }
 
 /* -------------------------------------------------------------------------- */
-/* Staff accounts                                                              */
+/* Staff accounts                                                             */
 /* -------------------------------------------------------------------------- */
 
-export function getStaff(): Promise<User[]> {
-  return request<User[]>('/staff');
+export async function getStaff(): Promise<User[]> {
+  return readList<User>('staff');
 }
 
 export interface CreateStaffInput {
@@ -154,15 +268,20 @@ export interface CreateStaffInput {
   password: string;
 }
 
-export function createStaff(input: CreateStaffInput): Promise<User> {
-  return request<User>('/staff', {
-    method: 'POST',
-    body: JSON.stringify(input)
-  });
+export async function createStaff(input: CreateStaffInput): Promise<User> {
+  // Never persist plain-text passwords in the database. Staff logins are
+  // handled by Supabase Auth / the local credential store.
+  const { password: _password, ...profile } = input;
+  const created = await insertOne<User>('staff', profile);
+  return {
+    ...created,
+    id: created.id ?? fallbackId('staff'),
+    phone: created.phone ?? input.phone ?? ''
+  };
 }
 
 /* -------------------------------------------------------------------------- */
-/* Class management                                                            */
+/* Class management                                                           */
 /* -------------------------------------------------------------------------- */
 
 export interface CreateClassInput {
@@ -176,19 +295,21 @@ export interface CreateClassInput {
   capacity: number;
 }
 
-export function createClass(input: CreateClassInput): Promise<SchoolClass> {
-  return request<SchoolClass>('/classes', {
-    method: 'POST',
-    body: JSON.stringify(input)
-  });
+export async function createClass(input: CreateClassInput): Promise<SchoolClass> {
+  const created = await insertOne<SchoolClass>('classes', input);
+  return {
+    ...created,
+    id: created.id ?? fallbackId('cls'),
+    studentCount: created.studentCount ?? 0
+  };
 }
 
 /* -------------------------------------------------------------------------- */
-/* Teacher attendance                                                          */
+/* Teacher attendance                                                         */
 /* -------------------------------------------------------------------------- */
 
-export function getTeacherAttendance(): Promise<TeacherAttendanceRecord[]> {
-  return request<TeacherAttendanceRecord[]>('/teacher-attendance');
+export async function getTeacherAttendance(): Promise<TeacherAttendanceRecord[]> {
+  return readList<TeacherAttendanceRecord>('teacherAttendance');
 }
 
 export interface TeacherCheckInInput {
@@ -199,13 +320,18 @@ export interface TeacherCheckInInput {
   notes?: string;
 }
 
-export function createTeacherCheckIn(
+export async function createTeacherCheckIn(
   input: TeacherCheckInInput
 ): Promise<TeacherAttendanceRecord> {
-  return request<TeacherAttendanceRecord>('/teacher-attendance', {
-    method: 'POST',
-    body: JSON.stringify(input)
+  const created = await insertOne<TeacherAttendanceRecord>('teacherAttendance', {
+    ...input,
+    status: 'PENDING'
   });
+  return {
+    ...created,
+    id: created.id ?? fallbackId('att'),
+    status: created.status ?? 'PENDING'
+  };
 }
 
 export interface ReviewTeacherAttendanceInput {
@@ -215,98 +341,120 @@ export interface ReviewTeacherAttendanceInput {
   rejectionReason?: string;
 }
 
-export function reviewTeacherAttendance(
+export async function reviewTeacherAttendance(
   id: string,
   input: ReviewTeacherAttendanceInput
 ): Promise<TeacherAttendanceRecord> {
-  return request<TeacherAttendanceRecord>(`/teacher-attendance/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify(input)
+  const updated = await patchOne<TeacherAttendanceRecord>('teacherAttendance', id, {
+    ...input,
+    reviewedAt: new Date().toISOString()
   });
+  return {
+    ...updated,
+    id: updated.id ?? id
+  };
 }
 
 /* -------------------------------------------------------------------------- */
-/* Student attendance                                                          */
+/* Student attendance                                                         */
 /* -------------------------------------------------------------------------- */
 
-export function getStudentAttendance(): Promise<StudentAttendanceRecord[]> {
-  return request<StudentAttendanceRecord[]>('/student-attendance');
+export async function getStudentAttendance(): Promise<StudentAttendanceRecord[]> {
+  return readList<StudentAttendanceRecord>('studentAttendance');
 }
 
-export function saveStudentAttendance(
+export async function saveStudentAttendance(
   records: Omit<StudentAttendanceRecord, 'id'>[]
 ): Promise<StudentAttendanceRecord[]> {
-  return request<StudentAttendanceRecord[]>('/student-attendance', {
+  const rows = await tableRequest<unknown[]>('studentAttendance', {
     method: 'POST',
-    body: JSON.stringify({ records })
+    body: records,
+    prefer: 'return=representation'
   });
+  return fromRow<StudentAttendanceRecord[]>(rows ?? []).map((record) => ({
+    ...record,
+    id: record.id ?? fallbackId('satt')
+  }));
 }
 
 /* -------------------------------------------------------------------------- */
-/* Fees & ledger                                                               */
+/* Fees & ledger                                                              */
 /* -------------------------------------------------------------------------- */
 
-export function getFeePayments(): Promise<FeePayment[]> {
-  return request<FeePayment[]>('/payments');
+export async function getFeePayments(): Promise<FeePayment[]> {
+  return readList<FeePayment>('payments');
 }
 
 export type RecordPaymentInput = Omit<FeePayment, 'id' | 'receiptNumber' | 'status'>;
 
-export function recordPayment(input: RecordPaymentInput): Promise<FeePayment> {
-  return request<FeePayment>('/payments', {
-    method: 'POST',
-    body: JSON.stringify(input)
+export async function recordPayment(input: RecordPaymentInput): Promise<FeePayment> {
+  const fallbackReceipt = `RCP-${new Date().getFullYear()}-${Date.now()
+    .toString()
+    .slice(-4)}`;
+  const created = await insertOne<FeePayment>('payments', {
+    ...input,
+    receiptNumber: fallbackReceipt,
+    status: 'VERIFIED'
   });
+  return {
+    ...created,
+    id: created.id ?? fallbackId('pay'),
+    receiptNumber: created.receiptNumber ?? fallbackReceipt,
+    status: created.status ?? 'VERIFIED'
+  };
 }
 
-export function getLedger(): Promise<LedgerEntry[]> {
-  return request<LedgerEntry[]>('/ledger');
+export async function getLedger(): Promise<LedgerEntry[]> {
+  return readList<LedgerEntry>('ledger');
 }
 
 export type LedgerEntryInput = Omit<LedgerEntry, 'id'>;
 
-export function createLedgerEntry(input: LedgerEntryInput): Promise<LedgerEntry> {
-  return request<LedgerEntry>('/ledger', {
-    method: 'POST',
-    body: JSON.stringify(input)
-  });
+export async function createLedgerEntry(input: LedgerEntryInput): Promise<LedgerEntry> {
+  const created = await insertOne<LedgerEntry>('ledger', input);
+  return {
+    ...created,
+    id: created.id ?? fallbackId('led')
+  };
 }
 
 /* -------------------------------------------------------------------------- */
 /* Curriculum                                                                  */
 /* -------------------------------------------------------------------------- */
 
-export function getCurriculum(classId?: string): Promise<CurriculumMaterial[]> {
-  const query = classId ? `?classId=${encodeURIComponent(classId)}` : '';
-  return request<CurriculumMaterial[]>(`/curriculum${query}`);
+export async function getCurriculum(_classId?: string): Promise<CurriculumMaterial[]> {
+  return readList<CurriculumMaterial>('curriculum');
 }
 
 export type CurriculumUploadInput = Omit<CurriculumMaterial, 'id' | 'uploadDate'>;
 
-export function uploadCurriculum(
+export async function uploadCurriculum(
   input: CurriculumUploadInput
 ): Promise<CurriculumMaterial> {
-  return request<CurriculumMaterial>('/curriculum', {
-    method: 'POST',
-    body: JSON.stringify(input)
-  });
+  const created = await insertOne<CurriculumMaterial>('curriculum', input);
+  return {
+    ...created,
+    id: created.id ?? fallbackId('cur'),
+    uploadDate: created.uploadDate ?? new Date().toISOString().slice(0, 10)
+  };
 }
 
 /* -------------------------------------------------------------------------- */
 /* Evaluations                                                                 */
 /* -------------------------------------------------------------------------- */
 
-export function getEvaluations(): Promise<StudentMilestoneEvaluation[]> {
-  return request<StudentMilestoneEvaluation[]>('/evaluations');
+export async function getEvaluations(): Promise<StudentMilestoneEvaluation[]> {
+  return readList<StudentMilestoneEvaluation>('evaluations');
 }
 
 /* -------------------------------------------------------------------------- */
 /* Parent feedback                                                             */
 /* -------------------------------------------------------------------------- */
 
-export function getFeedback(studentId?: string): Promise<ParentFeedbackMessage[]> {
-  const query = studentId ? `?studentId=${encodeURIComponent(studentId)}` : '';
-  return request<ParentFeedbackMessage[]>(`/feedback${query}`);
+export async function getFeedback(studentId?: string): Promise<ParentFeedbackMessage[]> {
+  const all = await readList<ParentFeedbackMessage>('feedback');
+  if (!studentId) return all;
+  return all.filter((message) => message.parentId === studentId);
 }
 
 export interface SubmitFeedbackInput {
@@ -318,11 +466,18 @@ export interface SubmitFeedbackInput {
   message: string;
 }
 
-export function submitFeedback(
+export async function submitFeedback(
   input: SubmitFeedbackInput
 ): Promise<ParentFeedbackMessage> {
-  return request<ParentFeedbackMessage>('/feedback', {
-    method: 'POST',
-    body: JSON.stringify(input)
+  const created = await insertOne<ParentFeedbackMessage>('feedback', {
+    ...input,
+    createdAt: new Date().toISOString(),
+    status: 'PENDING_REPLY'
   });
+  return {
+    ...created,
+    id: created.id ?? fallbackId('fb'),
+    createdAt: created.createdAt ?? new Date().toISOString(),
+    status: created.status ?? 'PENDING_REPLY'
+  };
 }

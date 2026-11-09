@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CurriculumMaterial,
   FeePayment,
@@ -14,8 +14,9 @@ import {
 } from './types';
 import { SCHOOL_INFO } from './config/school';
 import { HERO_SLIDES, HeroSlide } from './config/heroImages';
-import { SESSION_USER, TEACHER_SESSION } from './config/session';
 import * as api from './services/api';
+import * as auth from './services/auth';
+import { AuthSession, ROLE_LABELS } from './services/auth';
 import {
   SEED_CLASSES,
   SEED_CURRICULUM,
@@ -30,7 +31,7 @@ import {
 } from './data/seed';
 import { generateId, generateRegistrationNumber } from './utils/generators';
 import { LandingHero } from './components/LandingHero';
-import { RoleSwitcher } from './components/RoleSwitcher';
+import { AuthPortal } from './components/AuthPortal';
 import { HeadmasterPortal } from './components/HeadmasterPortal';
 import { AccountantPortal } from './components/AccountantPortal';
 import { TeacherPortal } from './components/TeacherPortal';
@@ -42,15 +43,20 @@ import {
   Home,
   AlertCircle,
   RefreshCw,
-  Loader2
+  Loader2,
+  LogOut
 } from 'lucide-react';
 
-type AppView = 'LANDING' | 'PORTALS';
+type AppView = 'LANDING' | 'AUTH' | 'PORTALS';
 
 export default function App() {
   const [view, setView] = useState<AppView>('LANDING');
-  const [activeRole, setActiveRole] = useState<UserRole>('HEADMASTER');
+  const [activeUser, setActiveUser] = useState<AuthSession | null>(() => auth.loadSession());
+  const [parentLookupReg, setParentLookupReg] = useState<string | undefined>(
+    () => auth.loadSession()?.linkedStudentReg
+  );
   const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(HERO_SLIDES);
+  const activeRole: UserRole = activeUser?.role ?? 'HEADMASTER';
 
   // All data starts empty and is loaded from the backend. If the API is not
   // reachable, the app falls back to local seed data so every portal stays
@@ -133,9 +139,46 @@ export default function App() {
     loadData();
   }, [loadData]);
 
-  const selectedStudent: Student | null = students[0] ?? null;
+  const parentStudent = useMemo(() => {
+    if (!parentLookupReg) return null;
+    const normalized = parentLookupReg.trim().toLowerCase();
+    return (
+      students.find((student) => student.regNumber.toLowerCase() === normalized) ?? null
+    );
+  }, [students, parentLookupReg]);
+
+  const selectedStudent: Student | null =
+    activeRole === 'PARENT' ? parentStudent : students[0] ?? null;
   const selectedEvaluation =
     evaluations.find((e) => e.studentId === selectedStudent?.id) ?? null;
+
+  const handleAuthenticated = (session: AuthSession) => {
+    setActiveUser(session);
+    setParentLookupReg(session.linkedStudentReg);
+    setView('PORTALS');
+  };
+
+  const handleLogout = () => {
+    auth.clearSession();
+    setActiveUser(null);
+    setParentLookupReg(undefined);
+    setView('AUTH');
+  };
+
+  const handleLookupStudent = (registrationNumber: string): boolean => {
+    const normalized = registrationNumber.trim().toLowerCase();
+    const match = students.find(
+      (student) => student.regNumber.toLowerCase() === normalized
+    );
+    if (!match) return false;
+
+    setParentLookupReg(match.regNumber);
+    if (activeUser) {
+      const updated = auth.updateLinkedStudent(activeUser.email, match.regNumber);
+      if (updated) setActiveUser(updated);
+    }
+    return true;
+  };
 
   // Hero image management — local file selection with object-URL previews.
   const heroObjectUrlsRef = useRef<string[]>([]);
@@ -199,7 +242,7 @@ export default function App() {
             ? {
                 ...rec,
                 status,
-                reviewedBy: SESSION_USER.name,
+                reviewedBy: activeUser?.name ?? 'Headmaster',
                 reviewedAt: new Date().toISOString(),
                 headmasterRemarks:
                   status === 'APPROVED' ? 'Attendance verified and approved.' : undefined,
@@ -214,7 +257,7 @@ export default function App() {
       try {
         const updated = await api.reviewTeacherAttendance(id, {
           status,
-          reviewedBy: SESSION_USER.name,
+          reviewedBy: activeUser?.name ?? 'Headmaster',
           headmasterRemarks:
             status === 'APPROVED' ? 'Attendance verified and approved.' : undefined,
           rejectionReason:
@@ -236,8 +279,8 @@ export default function App() {
     if (!usingFallback) {
       try {
         const created = await api.createTeacherCheckIn({
-          teacherId: TEACHER_SESSION.id,
-          teacherName: TEACHER_SESSION.name,
+          teacherId: activeUser?.id ?? 'current-teacher',
+          teacherName: activeUser?.name ?? 'Teacher',
           date: today(),
           checkInTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           notes: notes || undefined
@@ -251,8 +294,8 @@ export default function App() {
     setTeacherAttendance((prev) => [
       {
         id: generateId('att'),
-        teacherId: TEACHER_SESSION.id,
-        teacherName: TEACHER_SESSION.name,
+        teacherId: activeUser?.id ?? 'current-teacher',
+        teacherName: activeUser?.name ?? 'Teacher',
         date: today(),
         checkInTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         status: 'PENDING',
@@ -424,10 +467,30 @@ export default function App() {
 
   const handleCreateStaff = async (input: api.CreateStaffInput): Promise<User> => {
     setActionError(null);
+    const persistCredentials = (member: User) => {
+      auth.registerStaffAccount({
+        id: member.id,
+        name: member.name,
+        email: member.email,
+        password: input.password,
+        role: member.role,
+        title: member.title,
+        phone: member.phone || undefined
+      });
+      void auth.provisionStaffAuth({
+        name: member.name,
+        email: member.email,
+        password: input.password,
+        role: member.role,
+        title: member.title
+      });
+    };
+
     if (!usingFallback) {
       try {
         const created = await api.createStaff(input);
         setStaff((prev) => [...prev, created]);
+        persistCredentials(created);
         return created;
       } catch {
         setUsingFallback(true);
@@ -442,6 +505,7 @@ export default function App() {
       title: input.title
     };
     setStaff((prev) => [...prev, created]);
+    persistCredentials(created);
     return created;
   };
 
@@ -501,9 +565,19 @@ export default function App() {
     return (
       <LandingHero
         slides={heroSlides}
-        onEnter={() => setView('PORTALS')}
+        onEnter={() => setView(activeUser ? 'PORTALS' : 'AUTH')}
         onSelectFiles={handleSelectHeroImages}
         onResetSlides={handleResetHeroSlides}
+      />
+    );
+  }
+
+  if (view === 'AUTH' || !activeUser) {
+    return (
+      <AuthPortal
+        onAuthenticated={handleAuthenticated}
+        onBack={() => setView('LANDING')}
+        knownStudents={students}
       />
     );
   }
@@ -533,6 +607,7 @@ export default function App() {
             students={students}
             payments={payments}
             ledger={ledger}
+            currentUserName={activeUser.name}
             onRecordPayment={handleRecordPayment}
             onAddLedgerEntry={handleAddLedgerEntry}
           />
@@ -540,8 +615,8 @@ export default function App() {
       case 'TEACHER':
         return (
           <TeacherPortal
-            teacherId={TEACHER_SESSION.id}
-            teacherName={TEACHER_SESSION.name}
+            teacherId={activeUser?.id ?? 'current-teacher'}
+            teacherName={activeUser?.name ?? 'Teacher'}
             classes={classes}
             students={students}
             teacherAttendance={teacherAttendance}
@@ -560,6 +635,7 @@ export default function App() {
             feedbacks={feedbacks}
             evaluation={selectedEvaluation}
             onSubmitFeedback={handleSubmitFeedback}
+            onLookupStudent={handleLookupStudent}
           />
         );
       case 'SPONSOR':
@@ -600,24 +676,52 @@ export default function App() {
 
             <div className="flex items-center gap-2">
               {activeRole === 'SPONSOR' && (
-                <span className="hidden sm:inline-flex">
+                <span className="hidden lg:inline-flex">
                   <ReadOnlyBadge />
                 </span>
               )}
+              <div className="hidden md:flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5">
+                <span className="w-7 h-7 shrink-0 rounded-full bg-orange-500 text-white text-[10px] font-extrabold flex items-center justify-center">
+                  {activeUser.name
+                    .split(' ')
+                    .map((part) => part[0])
+                    .slice(0, 2)
+                    .join('')}
+                </span>
+                <div className="leading-tight min-w-0">
+                  <p className="text-[11px] font-bold text-slate-800 truncate max-w-[140px]">
+                    {activeUser.name}
+                  </p>
+                  <p className="text-[10px] text-slate-500">{ROLE_LABELS[activeRole]}</p>
+                </div>
+              </div>
               <button
                 onClick={() => setView('LANDING')}
+                aria-label="Back to home"
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors"
               >
                 <Home className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Home</span>
               </button>
+              <button
+                onClick={handleLogout}
+                aria-label="Log out"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-rose-50 hover:text-rose-700 transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Log out</span>
+              </button>
             </div>
           </div>
         </div>
 
-        <div className="border-t border-slate-100">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2">
-            <RoleSwitcher activeRole={activeRole} onSelectRole={setActiveRole} />
+        <div className="md:hidden border-t border-slate-100">
+          <div className="max-w-6xl mx-auto px-4 py-2 flex items-center justify-between gap-3 text-[11px]">
+            <span className="font-bold text-slate-700 truncate">{activeUser.name}</span>
+            <span className="inline-flex items-center gap-1.5 text-slate-500 shrink-0">
+              {ROLE_LABELS[activeRole]}
+              {activeRole === 'SPONSOR' && <ReadOnlyBadge />}
+            </span>
           </div>
         </div>
       </header>

@@ -8,7 +8,6 @@ import {
   Student
 } from '../types';
 import { RecordPaymentInput, LedgerEntryInput } from '../services/api';
-import { SESSION_USER } from '../config/session';
 import {
   Wallet,
   TrendingUp,
@@ -36,6 +35,7 @@ interface AccountantPortalProps {
   students: Student[];
   payments: FeePayment[];
   ledger: LedgerEntry[];
+  currentUserName: string;
   onRecordPayment: (input: RecordPaymentInput) => Promise<void>;
   onAddLedgerEntry: (input: LedgerEntryInput) => Promise<void>;
 }
@@ -67,6 +67,7 @@ export const AccountantPortal: React.FC<AccountantPortalProps> = ({
   students,
   payments,
   ledger,
+  currentUserName,
   onRecordPayment,
   onAddLedgerEntry
 }) => {
@@ -126,7 +127,7 @@ export const AccountantPortal: React.FC<AccountantPortalProps> = ({
         momoTransactionRef: paymentForm.reference || undefined,
         payerName: paymentForm.payerName || student.parentName,
         payerPhone: paymentForm.payerPhone || student.parentPhone,
-        receivedBy: SESSION_USER.name,
+        receivedBy: currentUserName,
         paymentDate: paymentForm.date
       });
       setPaymentMsg({ type: 'ok', text: 'Payment recorded successfully.' });
@@ -157,7 +158,7 @@ export const AccountantPortal: React.FC<AccountantPortalProps> = ({
         category: ledgerForm.category,
         amount: Number(ledgerForm.amount),
         referenceDocNumber: ledgerForm.reference || '—',
-        recordedBy: SESSION_USER.name,
+        recordedBy: currentUserName,
         paymentMethod: ledgerForm.method
       });
       setLedgerMsg({ type: 'ok', text: 'Ledger entry added.' });

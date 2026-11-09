@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CurriculumMaterial,
   SchoolClass,
@@ -8,6 +8,18 @@ import {
   TeacherAttendanceRecord
 } from '../types';
 import { CurriculumUploadInput } from '../services/api';
+import { SCHOOL_INFO } from '../config/school';
+import {
+  EMPTY_MARKS,
+  NURSERY_SUBJECTS,
+  NurserySubjectKey,
+  ReportCardRecord,
+  SubjectMarks,
+  calculateReport,
+  loadReportCard,
+  saveReportCard,
+  summarizeAttendance
+} from '../services/reportCards';
 import {
   Clock,
   CheckCircle2,
@@ -17,7 +29,11 @@ import {
   Loader2,
   AlertCircle,
   LogIn,
-  Users
+  Users,
+  FileText,
+  Printer,
+  GraduationCap,
+  Award
 } from 'lucide-react';
 import { Badge, EmptyState, SectionCard, Tabs } from './ui';
 
@@ -34,7 +50,7 @@ interface TeacherPortalProps {
   onUploadCurriculum: (input: CurriculumUploadInput) => Promise<void>;
 }
 
-type Tab = 'CHECKIN' | 'ATTENDANCE' | 'CURRICULUM';
+type Tab = 'CHECKIN' | 'ATTENDANCE' | 'CURRICULUM' | 'REPORTS';
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -44,6 +60,14 @@ const STATUS_OPTIONS: { value: StudentAttendanceState; tone: 'emerald' | 'rose' 
   { value: 'SICK', tone: 'amber' },
   { value: 'LATE', tone: 'slate' }
 ];
+
+const gradeTone = (status: string): 'emerald' | 'blue' | 'amber' | 'rose' | 'slate' => {
+  if (status === 'Excellent') return 'emerald';
+  if (status === 'Very Good') return 'blue';
+  if (status === 'Satisfactory') return 'amber';
+  if (status === 'Needs Improvement') return 'rose';
+  return 'slate';
+};
 
 const inputClass =
   'w-full px-3 py-2.5 border border-slate-300 rounded-lg text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500';
@@ -88,6 +112,14 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
+  const [reportClassId, setReportClassId] = useState('');
+  const [reportStudentId, setReportStudentId] = useState('');
+  const [reportMarks, setReportMarks] = useState<SubjectMarks>({ ...EMPTY_MARKS });
+  const [reportRemarks, setReportRemarks] = useState('');
+  const [showBulletin, setShowBulletin] = useState(false);
+  const [reportMsg, setReportMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const bulletinRef = useRef<HTMLDivElement>(null);
+
   const myAttendance = useMemo(
     () => teacherAttendance.filter((r) => r.teacherId === teacherId),
     [teacherAttendance, teacherId]
@@ -98,6 +130,111 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
     () => (selectedClassId ? students.filter((s) => s.classId === selectedClassId) : []),
     [selectedClassId, students]
   );
+
+  const reportClassStudents = useMemo(
+    () => (reportClassId ? students.filter((s) => s.classId === reportClassId) : []),
+    [reportClassId, students]
+  );
+
+  const reportStudent = reportClassStudents.find((s) => s.id === reportStudentId) ?? null;
+  const reportCalculation = useMemo(() => calculateReport(reportMarks), [reportMarks]);
+  const reportAttendance = useMemo(
+    () =>
+      summarizeAttendance(
+        reportStudentId
+          ? studentAttendance.filter((record) => record.studentId === reportStudentId)
+          : []
+      ),
+    [reportStudentId, studentAttendance]
+  );
+
+  useEffect(() => {
+    if (!reportStudent) {
+      setReportMarks({ ...EMPTY_MARKS });
+      setReportRemarks('');
+      setShowBulletin(false);
+      setReportMsg(null);
+      return;
+    }
+
+    const saved = loadReportCard(
+      reportStudent.id,
+      SCHOOL_INFO.academicYear,
+      SCHOOL_INFO.currentTerm
+    );
+    setReportMarks(saved?.marks ?? { ...EMPTY_MARKS });
+    setReportRemarks(saved?.remarks ?? '');
+    setShowBulletin(false);
+    setReportMsg(null);
+  }, [reportStudent?.id]);
+
+  const persistReport = (nextMarks: SubjectMarks, remarks: string) => {
+    if (!reportStudent) return;
+    const record: ReportCardRecord = {
+      studentId: reportStudent.id,
+      studentName: `${reportStudent.firstName} ${reportStudent.lastName}`,
+      studentReg: reportStudent.regNumber,
+      classId: reportStudent.classId,
+      className: reportStudent.className,
+      academicYear: SCHOOL_INFO.academicYear,
+      term: SCHOOL_INFO.currentTerm,
+      marks: nextMarks,
+      remarks,
+      updatedAt: new Date().toISOString()
+    };
+    saveReportCard(record);
+  };
+
+  const updateReportMark = (key: NurserySubjectKey, value: string) => {
+    const subject = NURSERY_SUBJECTS.find((item) => item.key === key);
+    let nextValue = '';
+
+    if (value !== '') {
+      const parsed = Number(value);
+      nextValue = Number.isFinite(parsed)
+        ? String(Math.min(subject?.maxScore ?? 20, Math.max(0, parsed)))
+        : '';
+    }
+
+    const nextMarks = { ...reportMarks, [key]: nextValue };
+    setReportMarks(nextMarks);
+    setReportMsg(null);
+    persistReport(nextMarks, reportRemarks);
+  };
+
+  const updateReportRemarks = (value: string) => {
+    setReportRemarks(value);
+    setReportMsg(null);
+    persistReport(reportMarks, value);
+  };
+
+  const handleGenerateBulletin = () => {
+    if (!reportStudent) {
+      setReportMsg({ type: 'err', text: 'Select a class and student first.' });
+      return;
+    }
+    if (!reportCalculation.completed) {
+      setReportMsg({
+        type: 'err',
+        text: 'Enter a valid score for all five subjects before generating the bulletin.'
+      });
+      return;
+    }
+
+    persistReport(reportMarks, reportRemarks);
+    setShowBulletin(true);
+    setReportMsg({
+      type: 'ok',
+      text: 'Bulletin generated. Review it below, then print or save it as a PDF.'
+    });
+    window.setTimeout(() => {
+      bulletinRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  };
+
+  const handlePrintBulletin = () => {
+    window.print();
+  };
 
   const handleCheckIn = async () => {
     setCheckInBusy(true);
@@ -194,7 +331,8 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         items={[
           { id: 'CHECKIN', label: 'Self Check-in', icon: <LogIn className="w-3.5 h-3.5" /> },
           { id: 'ATTENDANCE', label: 'Student Attendance', icon: <CalendarCheck2 className="w-3.5 h-3.5" /> },
-          { id: 'CURRICULUM', label: 'Curriculum Uploads', icon: <Upload className="w-3.5 h-3.5" /> }
+          { id: 'CURRICULUM', label: 'Curriculum Uploads', icon: <Upload className="w-3.5 h-3.5" /> },
+          { id: 'REPORTS', label: 'Auto Bulletin', icon: <FileText className="w-3.5 h-3.5" /> }
         ]}
       />
 
@@ -443,6 +581,498 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
               </div>
             )}
           </SectionCard>
+        </div>
+      )}
+
+      {tab === 'REPORTS' && (
+        <div className="space-y-5">
+          <SectionCard
+            title="Auto Bulletin — Term Report Cards"
+            subtitle="Enter marks once; attendance, totals and the printable bulletin are generated automatically"
+            icon={<FileText className="w-5 h-5" />}
+          >
+            <div className="p-4 sm:p-5 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 text-xs mb-1">Class</label>
+                  <select
+                    value={reportClassId}
+                    onChange={(e) => {
+                      setReportClassId(e.target.value);
+                      setReportStudentId('');
+                      setReportMarks({ ...EMPTY_MARKS });
+                      setReportRemarks('');
+                      setShowBulletin(false);
+                      setReportMsg(null);
+                    }}
+                    className={inputClass}
+                  >
+                    <option value="">Select class</option>
+                    {classes.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 text-xs mb-1">
+                    Student
+                  </label>
+                  <select
+                    value={reportStudentId}
+                    onChange={(e) => {
+                      setReportStudentId(e.target.value);
+                      setReportMarks({ ...EMPTY_MARKS });
+                      setReportRemarks('');
+                      setShowBulletin(false);
+                      setReportMsg(null);
+                    }}
+                    disabled={!reportClassId}
+                    className={`${inputClass} disabled:bg-slate-50 disabled:text-slate-400`}
+                  >
+                    <option value="">
+                      {reportClassId ? 'Select student' : 'Choose a class first'}
+                    </option>
+                    {reportClassStudents.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.firstName} {s.lastName} · {s.regNumber}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {!reportStudent ? (
+                <EmptyState
+                  icon={<FileText className="w-9 h-9" />}
+                  title="Select a pupil"
+                  message="Choose a class and student to enter marks for the term."
+                />
+              ) : (
+                <>
+                  <div className="rounded-xl border border-slate-200 overflow-hidden">
+                    <div className="hidden sm:grid grid-cols-[1fr_auto_auto] gap-3 bg-slate-50 px-4 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      <span>Subject / Competency</span>
+                      <span className="w-14 text-center">Max</span>
+                      <span className="w-56 text-right">Score & Remark</span>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {NURSERY_SUBJECTS.map((subject) => {
+                        const result = reportCalculation.subjects.find(
+                          (item) => item.key === subject.key
+                        );
+                        return (
+                          <div
+                            key={subject.key}
+                            className="p-3 sm:px-4 grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-2 sm:gap-3 sm:items-center"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-slate-800">{subject.name}</p>
+                              <p className="text-[10px] text-slate-500">{subject.competency}</p>
+                            </div>
+                            <span className="hidden sm:inline text-xs text-slate-500 w-14 text-center">
+                              / {subject.maxScore}
+                            </span>
+                            <div className="flex items-center gap-2 sm:justify-end">
+                              <span className="sm:hidden text-[11px] text-slate-500">
+                                Max {subject.maxScore}
+                              </span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={subject.maxScore}
+                                step="0.5"
+                                value={reportMarks[subject.key]}
+                                onChange={(e) => updateReportMark(subject.key, e.target.value)}
+                                placeholder="0"
+                                className="w-20 rounded-lg border border-slate-300 bg-white px-2 py-2 text-center text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:border-orange-500"
+                              />
+                              <Badge tone={gradeTone(result?.remark ?? 'Not assessed')}>
+                                {result?.remark ?? 'Not assessed'}
+                              </Badge>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        <CalendarCheck2 className="w-3.5 h-3.5 text-orange-500" />
+                        Attendance Summary · {SCHOOL_INFO.currentTerm}
+                      </p>
+                      <Badge
+                        tone={
+                          reportAttendance.total === 0
+                            ? 'slate'
+                            : reportAttendance.attendanceRate >= 80
+                              ? 'emerald'
+                              : reportAttendance.attendanceRate >= 60
+                                ? 'amber'
+                                : 'rose'
+                        }
+                      >
+                        {reportAttendance.total === 0
+                          ? 'No records'
+                          : `${reportAttendance.attendanceRate.toFixed(0)}% attendance`}
+                      </Badge>
+                    </div>
+                    <div className="mt-2.5 grid grid-cols-3 sm:grid-cols-6 gap-2 text-center">
+                      {[
+                        { label: 'Days', value: reportAttendance.total },
+                        { label: 'Present', value: reportAttendance.present },
+                        { label: 'Late', value: reportAttendance.late },
+                        { label: 'Absent', value: reportAttendance.absent },
+                        { label: 'Sick', value: reportAttendance.sick },
+                        { label: 'Excused', value: reportAttendance.excused }
+                      ].map((item) => (
+                        <div
+                          key={item.label}
+                          className="rounded-lg border border-slate-200 bg-white p-2"
+                        >
+                          <p className="text-base font-extrabold text-slate-800">{item.value}</p>
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                            {item.label}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    {reportAttendance.total === 0 && (
+                      <p className="mt-2 text-[11px] text-amber-700">
+                        No attendance records have been captured for this pupil this term yet.
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 text-xs mb-1">
+                      Teacher’s General Observations &amp; Remarks
+                    </label>
+                    <textarea
+                      rows={4}
+                      value={reportRemarks}
+                      onChange={(e) => updateReportRemarks(e.target.value)}
+                      placeholder="e.g. Kevin has made excellent progress in early literacy and participates confidently during group activities."
+                      className={`${inputClass} resize-none`}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Total Marks
+                      </p>
+                      <p className="mt-1 text-base font-extrabold text-slate-800">
+                        {reportCalculation.total} / {reportCalculation.maxTotal}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Average Score
+                      </p>
+                      <p className="mt-1 text-base font-extrabold text-slate-800">
+                        {reportCalculation.average.toFixed(1)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Percentage
+                      </p>
+                      <p className="mt-1 text-base font-extrabold text-slate-800">
+                        {reportCalculation.percentage.toFixed(1)}%
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-orange-200 bg-orange-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-orange-700">
+                        Grade Status
+                      </p>
+                      <div className="mt-1">
+                        <Badge tone={gradeTone(reportCalculation.status)}>
+                          {reportCalculation.status}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <p className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                      Marks and remarks save automatically on this device.
+                    </p>
+                    <button
+                      onClick={handleGenerateBulletin}
+                      disabled={!reportCalculation.completed}
+                      className="inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-orange-500 hover:bg-orange-600 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <FileText className="w-4 h-4" />
+                      Generate Bulletin
+                    </button>
+                  </div>
+
+                  {!reportCalculation.completed && (
+                    <p className="text-[11px] text-amber-700">
+                      Enter a valid score for all five subjects to generate the bulletin.
+                    </p>
+                  )}
+                  <Msg msg={reportMsg} />
+                </>
+              )}
+            </div>
+          </SectionCard>
+
+          {showBulletin && reportStudent && (
+            <div ref={bulletinRef} className="space-y-3">
+              <div className="no-print flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                <p className="text-xs text-slate-500">
+                  Official bulletin preview · updates instantly with your marks.
+                </p>
+                <button
+                  onClick={handlePrintBulletin}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold text-white bg-orange-500 hover:bg-orange-600 rounded-lg transition-colors shrink-0"
+                >
+                  <Printer className="w-4 h-4" />
+                  Print Bulletin / Download PDF
+                </button>
+              </div>
+
+              <div className="bulletin-print-area bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="h-2 bg-orange-500" />
+                <div className="p-5 sm:p-8 space-y-6">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b-2 border-orange-200 pb-4">
+                    <div className="flex items-center gap-3">
+                      <span className="w-12 h-12 shrink-0 rounded-xl bg-orange-500 flex items-center justify-center shadow-sm">
+                        <GraduationCap className="w-7 h-7 text-white" />
+                      </span>
+                      <div>
+                        <h2 className="text-lg sm:text-xl font-extrabold text-slate-800">
+                          Irere Nursery School
+                        </h2>
+                        <p className="text-[11px] font-semibold text-orange-600">
+                          Gasabo District, Kigali City
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          {SCHOOL_INFO.village} · {SCHOOL_INFO.sector}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="sm:text-right">
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-200 bg-orange-50 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-orange-700">
+                        <Award className="w-3.5 h-3.5" />
+                        Official Bulletin
+                      </span>
+                      <p className="mt-1.5 text-[11px] text-slate-600">
+                        Academic Year {SCHOOL_INFO.academicYear}
+                      </p>
+                      <p className="text-[11px] font-semibold text-slate-700">
+                        {SCHOOL_INFO.currentTerm}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Student Name
+                      </p>
+                      <p className="mt-0.5 font-bold text-slate-800">
+                        {reportStudent.firstName} {reportStudent.lastName}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Registration Number
+                      </p>
+                      <p className="mt-0.5 font-mono font-bold text-slate-800">
+                        {reportStudent.regNumber}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Class
+                      </p>
+                      <p className="mt-0.5 font-bold text-slate-800">{reportStudent.className}</p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Academic Year &amp; Term
+                      </p>
+                      <p className="mt-0.5 font-bold text-slate-800">
+                        {SCHOOL_INFO.academicYear} · {SCHOOL_INFO.currentTerm}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        Attendance Summary
+                      </h3>
+                      <Badge
+                        tone={
+                          reportAttendance.total === 0
+                            ? 'slate'
+                            : reportAttendance.attendanceRate >= 80
+                              ? 'emerald'
+                              : reportAttendance.attendanceRate >= 60
+                                ? 'amber'
+                                : 'rose'
+                        }
+                      >
+                        {reportAttendance.total === 0
+                          ? 'No records'
+                          : `${reportAttendance.attendanceRate.toFixed(0)}% attendance`}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 sm:grid-cols-6 gap-2 text-center">
+                      {[
+                        { label: 'Days', value: reportAttendance.total },
+                        { label: 'Present', value: reportAttendance.present },
+                        { label: 'Late', value: reportAttendance.late },
+                        { label: 'Absent', value: reportAttendance.absent },
+                        { label: 'Sick', value: reportAttendance.sick },
+                        { label: 'Excused', value: reportAttendance.excused }
+                      ].map((item) => (
+                        <div key={item.label} className="rounded-lg border border-slate-200 bg-white p-2">
+                          <p className="text-base font-extrabold text-slate-800">{item.value}</p>
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                            {item.label}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[10px] text-slate-500">
+                      Attendance covers {reportAttendance.attended} of {reportAttendance.total}{' '}
+                      recorded school day{reportAttendance.total === 1 ? '' : 's'} this term.
+                    </p>
+                  </div>
+
+                  <div>
+                    <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2">
+                      Subject Performance
+                    </h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[460px] text-left text-xs border border-slate-200">
+                        <thead className="bg-orange-50 text-orange-900">
+                          <tr>
+                            <th className="px-3 py-2 font-bold border-b border-orange-100">
+                              Subject
+                            </th>
+                            <th className="px-3 py-2 font-bold border-b border-orange-100 text-center">
+                              Max Score
+                            </th>
+                            <th className="px-3 py-2 font-bold border-b border-orange-100 text-center">
+                              Scored Score
+                            </th>
+                            <th className="px-3 py-2 font-bold border-b border-orange-100 text-right">
+                              Remark
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {reportCalculation.subjects.map((row) => (
+                            <tr key={row.key}>
+                              <td className="px-3 py-2">
+                                <p className="font-semibold text-slate-800">{row.name}</p>
+                                <p className="text-[10px] text-slate-400">{row.competency}</p>
+                              </td>
+                              <td className="px-3 py-2 text-center text-slate-600">
+                                {row.maxScore}
+                              </td>
+                              <td className="px-3 py-2 text-center font-bold text-slate-800">
+                                {row.score ?? '—'}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <Badge tone={gradeTone(row.remark)}>{row.remark}</Badge>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="bg-slate-50 font-bold text-slate-800">
+                            <td className="px-3 py-2">Total</td>
+                            <td className="px-3 py-2 text-center">{reportCalculation.maxTotal}</td>
+                            <td className="px-3 py-2 text-center">{reportCalculation.total}</td>
+                            <td className="px-3 py-2 text-right">
+                              {reportCalculation.percentage.toFixed(1)}%
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+                    <div className="rounded-lg border border-orange-200 bg-orange-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-orange-800">
+                        Overall Average
+                      </p>
+                      <p className="mt-1 text-lg font-extrabold text-orange-600">
+                        {reportCalculation.percentage.toFixed(1)}%
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Total Score
+                      </p>
+                      <p className="mt-1 text-lg font-extrabold text-slate-800">
+                        {reportCalculation.total} / {reportCalculation.maxTotal}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Average / Subject
+                      </p>
+                      <p className="mt-1 text-lg font-extrabold text-slate-800">
+                        {reportCalculation.average.toFixed(1)} /{' '}
+                        {(
+                          reportCalculation.maxTotal / reportCalculation.subjects.length
+                        ).toFixed(0)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Grade Status
+                      </p>
+                      <div className="mt-1 flex justify-center">
+                        <Badge tone={gradeTone(reportCalculation.status)}>
+                          {reportCalculation.status}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="rounded-lg border border-slate-200 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Class Teacher’s Remark
+                      </p>
+                      <p className="mt-1 min-h-[3rem] text-xs leading-relaxed text-slate-700 italic">
+                        {reportRemarks.trim() || 'No additional remarks.'}
+                      </p>
+                      <div className="mt-5 pt-2 border-t border-slate-300 flex items-center justify-between gap-2">
+                        <span className="text-[10px] text-slate-500">Signature</span>
+                        <span className="text-xs font-semibold text-slate-800">{teacherName}</span>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Headmaster’s Signature
+                      </p>
+                      <div className="mt-10 border-t border-dashed border-slate-300" />
+                      <p className="mt-1 text-[10px] text-slate-400">Name, signature & school stamp</p>
+                    </div>
+                  </div>
+
+                  <p className="text-center text-[10px] text-slate-400">
+                    Generated by {SCHOOL_INFO.name} · {SCHOOL_INFO.email} · {SCHOOL_INFO.phone}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
