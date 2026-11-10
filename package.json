@@ -10,6 +10,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "db:reset:demo": "node scripts/reset-demo-data.mjs",
+    "db:apply-schema": "node scripts/apply-schema.mjs",
     "db:wipe:demo": "node scripts/supabase-wipe-demo-data.mjs",
     "db:wipe:demo:dry": "node scripts/supabase-wipe-demo-data.mjs --dry-run",
     "db:provision:headmaster": "node scripts/provision-headmaster.mjs"
