@@ -251,6 +251,30 @@ export async function createStudent(input: CreateStudentInput): Promise<Student>
   };
 }
 
+export type UpdateStudentInput = Omit<CreateStudentInput, 'regNumber'>;
+
+export async function updateStudent(id: string, input: UpdateStudentInput): Promise<Student> {
+  const updated = await patchOne<Student | undefined>('students', id, input);
+  if (!updated) {
+    throw new ApiError('Student not found or could not be updated.', 404);
+  }
+  const paid = updated.paidAmount ?? 0;
+  return {
+    ...updated,
+    id: updated.id ?? id,
+    paidAmount: paid,
+    balance: Math.max(0, input.tuitionFeeTerm - paid),
+    emergencyContact: updated.emergencyContact ?? ''
+  };
+}
+
+export async function deleteStudent(id: string): Promise<void> {
+  await tableRequest<unknown[]>('students', {
+    method: 'DELETE',
+    query: `?id=eq.${encodeURIComponent(id)}`
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Staff accounts                                                             */
 /* -------------------------------------------------------------------------- */

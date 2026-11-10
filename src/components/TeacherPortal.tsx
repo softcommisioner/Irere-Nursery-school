@@ -36,6 +36,12 @@ import {
   Award
 } from 'lucide-react';
 import { Badge, EmptyState, SectionCard, Tabs } from './ui';
+import {
+  ConfirmDialog,
+  StudentEditModal,
+  StudentEditValues,
+  StudentRegisterTable
+} from './StudentDialogs';
 
 interface TeacherPortalProps {
   teacherId: string;
@@ -47,10 +53,12 @@ interface TeacherPortalProps {
   curriculum: CurriculumMaterial[];
   onCheckIn: (notes: string) => Promise<void>;
   onSaveStudentAttendance: (records: Omit<StudentAttendanceRecord, 'id'>[]) => Promise<void>;
+  onUpdateStudent: (id: string, values: StudentEditValues) => Promise<void>;
+  onDeleteStudent: (id: string) => Promise<void>;
   onUploadCurriculum: (input: CurriculumUploadInput) => Promise<void>;
 }
 
-type Tab = 'CHECKIN' | 'ATTENDANCE' | 'CURRICULUM' | 'REPORTS';
+type Tab = 'CHECKIN' | 'ATTENDANCE' | 'STUDENTS' | 'CURRICULUM' | 'REPORTS';
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -82,6 +90,8 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   curriculum,
   onCheckIn,
   onSaveStudentAttendance,
+  onUpdateStudent,
+  onDeleteStudent,
   onUploadCurriculum
 }) => {
   const [tab, setTab] = useState<Tab>('CHECKIN');
@@ -94,6 +104,13 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const [marks, setMarks] = useState<Record<string, StudentAttendanceState>>({});
   const [attendanceBusy, setAttendanceBusy] = useState(false);
   const [attendanceMsg, setAttendanceMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [deletingStudent, setDeletingStudent] = useState<Student | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [upload, setUpload] = useState<CurriculumUploadInput>({
     title: '',
@@ -298,6 +315,33 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
     }
   };
 
+  const handleSaveStudentEdit = async (id: string, values: StudentEditValues) => {
+    setEditBusy(true);
+    setEditError(null);
+    try {
+      await onUpdateStudent(id, values);
+      setEditingStudent(null);
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'Could not update the student.');
+    } finally {
+      setEditBusy(false);
+    }
+  };
+
+  const handleConfirmDeleteStudent = async () => {
+    if (!deletingStudent) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await onDeleteStudent(deletingStudent.id);
+      setDeletingStudent(null);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Could not delete the student.');
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
   const Msg = ({ msg }: { msg: { type: 'ok' | 'err'; text: string } | null }) =>
     msg ? (
       <div
@@ -331,6 +375,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         items={[
           { id: 'CHECKIN', label: 'Self Check-in', icon: <LogIn className="w-3.5 h-3.5" /> },
           { id: 'ATTENDANCE', label: 'Student Attendance', icon: <CalendarCheck2 className="w-3.5 h-3.5" /> },
+          { id: 'STUDENTS', label: 'Students', icon: <Users className="w-3.5 h-3.5" /> },
           { id: 'CURRICULUM', label: 'Curriculum Uploads', icon: <Upload className="w-3.5 h-3.5" /> },
           { id: 'REPORTS', label: 'Auto Bulletin', icon: <FileText className="w-3.5 h-3.5" /> }
         ]}
@@ -478,6 +523,35 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
               </>
             )}
           </div>
+        </SectionCard>
+      )}
+
+      {tab === 'STUDENTS' && (
+        <SectionCard
+          title="Student register"
+          subtitle={`${students.length} pupils enrolled · update records or remove pupils`}
+          icon={<Users className="w-5 h-5" />}
+        >
+          {students.length === 0 ? (
+            <EmptyState
+              icon={<Users className="w-9 h-9" />}
+              title="No students registered yet"
+              message="Registered pupils will appear here."
+            />
+          ) : (
+            <StudentRegisterTable
+              students={students}
+              busyId={deleteBusy ? deletingStudent?.id ?? null : null}
+              onEdit={(student) => {
+                setEditError(null);
+                setEditingStudent(student);
+              }}
+              onDelete={(student) => {
+                setDeleteError(null);
+                setDeletingStudent(student);
+              }}
+            />
+          )}
         </SectionCard>
       )}
 
@@ -1074,6 +1148,42 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
             </div>
           )}
         </div>
+      )}
+      {editingStudent && (
+        <StudentEditModal
+          student={editingStudent}
+          classes={classes}
+          busy={editBusy}
+          error={editError}
+          onClose={() => {
+            setEditingStudent(null);
+            setEditError(null);
+          }}
+          onSave={handleSaveStudentEdit}
+        />
+      )}
+
+      {deletingStudent && (
+        <ConfirmDialog
+          title="Delete student"
+          message={
+            <>
+              Are you sure you want to delete this student?{' '}
+              <strong>
+                {deletingStudent.firstName} {deletingStudent.lastName} (
+                {deletingStudent.regNumber})
+              </strong>{' '}
+              will be permanently removed from the register.
+            </>
+          }
+          busy={deleteBusy}
+          error={deleteError}
+          onCancel={() => {
+            setDeletingStudent(null);
+            setDeleteError(null);
+          }}
+          onConfirm={handleConfirmDeleteStudent}
+        />
       )}
     </div>
   );

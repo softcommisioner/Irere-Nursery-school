@@ -569,6 +569,43 @@ export default function App() {
     return created;
   };
 
+  const handleUpdateStudent = async (
+    id: string,
+    input: api.UpdateStudentInput
+  ): Promise<void> => {
+    setActionError(null);
+    if (!usingFallback) {
+      try {
+        const updated = await api.updateStudent(id, input);
+        setStudents((prev) => prev.map((s) => (s.id === id ? { ...s, ...updated } : s)));
+        return;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    setStudents((prev) =>
+      prev.map((s) =>
+        s.id === id
+          ? { ...s, ...input, balance: Math.max(0, input.tuitionFeeTerm - s.paidAmount) }
+          : s
+      )
+    );
+  };
+
+  const handleDeleteStudent = async (id: string): Promise<void> => {
+    setActionError(null);
+    if (!usingFallback) {
+      try {
+        await api.deleteStudent(id);
+        setStudents((prev) => prev.filter((s) => s.id !== id));
+        return;
+      } catch {
+        setUsingFallback(true);
+      }
+    }
+    setStudents((prev) => prev.filter((s) => s.id !== id));
+  };
+
   /* ---------------------------------------------------------------------- */
 
   if (view === 'LANDING') {
@@ -608,6 +645,8 @@ export default function App() {
             onCreateStaff={handleCreateStaff}
             onRegisterParent={handleRegisterParent}
             onRegisterStudent={handleRegisterStudent}
+            onUpdateStudent={handleUpdateStudent}
+            onDeleteStudent={handleDeleteStudent}
             onCreateClass={handleCreateClass}
           />
         );
@@ -635,6 +674,8 @@ export default function App() {
             curriculum={curriculum}
             onCheckIn={handleTeacherCheckIn}
             onSaveStudentAttendance={handleSaveStudentAttendance}
+            onUpdateStudent={handleUpdateStudent}
+            onDeleteStudent={handleDeleteStudent}
             onUploadCurriculum={handleUploadCurriculum}
           />
         );

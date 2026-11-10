@@ -34,6 +34,12 @@ import {
   Plus,
   ClipboardList
 } from 'lucide-react';
+import {
+  ConfirmDialog,
+  StudentEditModal,
+  StudentEditValues,
+  StudentRegisterTable
+} from './StudentDialogs';
 import { Badge, EmptyState, ProgressBar, SectionCard, StatCard, Tabs } from './ui';
 
 interface HeadmasterPortalProps {
@@ -48,6 +54,8 @@ interface HeadmasterPortalProps {
   onCreateStaff: (input: CreateStaffInput) => Promise<User>;
   onRegisterParent: (input: ParentRegistrationInput) => Promise<void>;
   onRegisterStudent: (input: Omit<CreateStudentInput, 'regNumber'>) => Promise<Student>;
+  onUpdateStudent: (id: string, values: StudentEditValues) => Promise<void>;
+  onDeleteStudent: (id: string) => Promise<void>;
   onCreateClass: (input: CreateClassInput) => Promise<SchoolClass>;
 }
 
@@ -144,6 +152,8 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   onCreateStaff,
   onRegisterParent,
   onRegisterStudent,
+  onUpdateStudent,
+  onDeleteStudent,
   onCreateClass
 }) => {
   const [tab, setTab] = useState<Tab>('OVERVIEW');
@@ -198,6 +208,12 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   });
   const [studentBusy, setStudentBusy] = useState(false);
   const [studentMsg, setStudentMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [deletingStudent, setDeletingStudent] = useState<Student | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   /* ---------------------------- Class department ------------------------ */
   const [classForm, setClassForm] = useState({
@@ -421,6 +437,41 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
       });
     } finally {
       setStudentBusy(false);
+    }
+  };
+
+  const handleSaveStudentEdit = async (id: string, values: StudentEditValues) => {
+    setEditBusy(true);
+    setEditError(null);
+    try {
+      await onUpdateStudent(id, values);
+      setStudentMsg({
+        tone: 'ok',
+        text: `${values.firstName} ${values.lastName} was updated successfully.`
+      });
+      setEditingStudent(null);
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'Could not update the student.');
+    } finally {
+      setEditBusy(false);
+    }
+  };
+
+  const handleConfirmDeleteStudent = async () => {
+    if (!deletingStudent) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await onDeleteStudent(deletingStudent.id);
+      setStudentMsg({
+        tone: 'ok',
+        text: `${deletingStudent.firstName} ${deletingStudent.lastName} was removed from the register.`
+      });
+      setDeletingStudent(null);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Could not delete the student.');
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -1078,48 +1129,18 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
             {students.length === 0 ? (
               <EmptyState title="No students registered yet" />
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-50 border-b border-slate-200 text-[10px] uppercase tracking-wider text-slate-500">
-                    <tr>
-                      <th className="py-3 px-4 font-semibold">Reg. No.</th>
-                      <th className="py-3 px-4 font-semibold">Student</th>
-                      <th className="py-3 px-4 font-semibold">Class</th>
-                      <th className="py-3 px-4 font-semibold">Parent</th>
-                      <th className="py-3 px-4 font-semibold text-right">Balance</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {students.map((s) => (
-                      <tr key={s.id} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
-                          {s.regNumber}
-                        </td>
-                        <td className="py-3 px-4">
-                          <p className="font-semibold text-slate-800">
-                            {s.firstName} {s.lastName}
-                          </p>
-                          <p className="text-[10px] text-slate-400">{s.dob}</p>
-                        </td>
-                        <td className="py-3 px-4">
-                          <Badge tone="orange">{s.className}</Badge>
-                        </td>
-                        <td className="py-3 px-4 text-slate-600">
-                          <p>{s.parentName}</p>
-                          <p className="text-[10px] text-slate-400">{s.parentPhone}</p>
-                        </td>
-                        <td
-                          className={`py-3 px-4 text-right font-semibold ${
-                            s.balance <= 0 ? 'text-emerald-600' : 'text-rose-600'
-                          }`}
-                        >
-                          {formatRwf(s.balance)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <StudentRegisterTable
+                students={students}
+                busyId={deleteBusy ? deletingStudent?.id ?? null : null}
+                onEdit={(student) => {
+                  setEditError(null);
+                  setEditingStudent(student);
+                }}
+                onDelete={(student) => {
+                  setDeleteError(null);
+                  setDeletingStudent(student);
+                }}
+              />
             )}
           </SectionCard>
         </div>
@@ -1485,6 +1506,43 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
             </SectionCard>
           </div>
         </div>
+      )}
+
+      {editingStudent && (
+        <StudentEditModal
+          student={editingStudent}
+          classes={classes}
+          busy={editBusy}
+          error={editError}
+          onClose={() => {
+            setEditingStudent(null);
+            setEditError(null);
+          }}
+          onSave={handleSaveStudentEdit}
+        />
+      )}
+
+      {deletingStudent && (
+        <ConfirmDialog
+          title="Delete student"
+          message={
+            <>
+              Are you sure you want to delete this student?{' '}
+              <strong>
+                {deletingStudent.firstName} {deletingStudent.lastName} (
+                {deletingStudent.regNumber})
+              </strong>{' '}
+              will be permanently removed from the register.
+            </>
+          }
+          busy={deleteBusy}
+          error={deleteError}
+          onCancel={() => {
+            setDeletingStudent(null);
+            setDeleteError(null);
+          }}
+          onConfirm={handleConfirmDeleteStudent}
+        />
       )}
     </div>
   );
