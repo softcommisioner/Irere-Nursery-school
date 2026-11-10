@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   FeePayment,
   LedgerEntry,
@@ -9,11 +9,13 @@ import {
   User
 } from '../types';
 import { CreateClassInput, CreateStaffInput, CreateStudentInput } from '../services/api';
+import { ParentRegistrationInput } from '../services/auth';
 import { generatePassword } from '../utils/generators';
 import {
   Users,
   UserCog,
   UserPlus,
+  UserCheck,
   GraduationCap,
   Layers,
   CheckCircle2,
@@ -44,11 +46,19 @@ interface HeadmasterPortalProps {
   onApprove: (id: string) => Promise<void>;
   onReject: (id: string) => Promise<void>;
   onCreateStaff: (input: CreateStaffInput) => Promise<User>;
+  onRegisterParent: (input: ParentRegistrationInput) => Promise<void>;
   onRegisterStudent: (input: Omit<CreateStudentInput, 'regNumber'>) => Promise<Student>;
   onCreateClass: (input: CreateClassInput) => Promise<SchoolClass>;
 }
 
-type Tab = 'OVERVIEW' | 'STAFF' | 'STUDENTS' | 'CLASSES' | 'ATTENDANCE' | 'FINANCE';
+type Tab =
+  | 'OVERVIEW'
+  | 'STAFF'
+  | 'PARENTS'
+  | 'STUDENTS'
+  | 'CLASSES'
+  | 'ATTENDANCE'
+  | 'FINANCE';
 
 const formatRwf = (amount: number) => `${(amount ?? 0).toLocaleString()} RWF`;
 
@@ -132,6 +142,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   onApprove,
   onReject,
   onCreateStaff,
+  onRegisterParent,
   onRegisterStudent,
   onCreateClass
 }) => {
@@ -153,6 +164,23 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
     email: string;
     password: string;
     role: string;
+  } | null>(null);
+
+  /* --------------------------- Parent department ------------------------ */
+  const [parentForm, setParentForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    linkedStudentReg: '',
+    linkedStudentName: ''
+  });
+  const [parentBusy, setParentBusy] = useState(false);
+  const [parentMsg, setParentMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+  const [parentCredentials, setParentCredentials] = useState<{
+    name: string;
+    email: string;
+    password: string;
+    student: string;
   } | null>(null);
 
   /* --------------------------- Student department ----------------------- */
@@ -187,6 +215,31 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   /* ------------------------------- Derived ------------------------------ */
   const pending = teacherAttendance.filter((r) => r.status === 'PENDING');
   const approved = teacherAttendance.filter((r) => r.status === 'APPROVED');
+
+  const parentDirectory = useMemo(() => {
+    const map = new Map<
+      string,
+      { name: string; email: string; phone: string; children: string[] }
+    >();
+    students.forEach((student) => {
+      const email = (student.parentEmail ?? '').trim();
+      if (!email) return;
+      const key = email.toLowerCase();
+      const existing = map.get(key);
+      const child = `${student.firstName} ${student.lastName} (${student.regNumber})`;
+      if (existing) {
+        existing.children.push(child);
+      } else {
+        map.set(key, {
+          name: student.parentName || 'Parent / Guardian',
+          email,
+          phone: student.parentPhone ?? '',
+          children: [child]
+        });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [students]);
 
   const totalBilled = students.reduce((a, s) => a + (s.tuitionFeeTerm ?? 0), 0);
   const totalCollected = students.reduce((a, s) => a + (s.paidAmount ?? 0), 0);
@@ -246,6 +299,75 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
       });
     } finally {
       setStaffBusy(false);
+    }
+  };
+
+  const handleRegisterParent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setParentMsg(null);
+
+    if (!parentForm.name.trim()) {
+      setParentMsg({ tone: 'error', text: 'Parent / guardian full name is required.' });
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parentForm.email.trim())) {
+      setParentMsg({ tone: 'error', text: 'Enter a valid parent email address.' });
+      return;
+    }
+    if (!parentForm.linkedStudentReg.trim()) {
+      setParentMsg({
+        tone: 'error',
+        text: 'Enter the registration number of the child this parent should access.'
+      });
+      return;
+    }
+
+    const linkedStudent = students.find(
+      (student) =>
+        student.regNumber.toLowerCase() ===
+        parentForm.linkedStudentReg.trim().toLowerCase()
+    );
+    const password = generatePassword();
+    setParentBusy(true);
+    try {
+      await onRegisterParent({
+        name: parentForm.name.trim(),
+        email: parentForm.email.trim(),
+        phone: parentForm.phone.trim() || undefined,
+        password,
+        linkedStudentReg: linkedStudent?.regNumber ?? parentForm.linkedStudentReg.trim(),
+        linkedStudentName:
+          parentForm.linkedStudentName.trim() ||
+          (linkedStudent
+            ? `${linkedStudent.firstName} ${linkedStudent.lastName}`
+            : undefined)
+      });
+      setParentCredentials({
+        name: parentForm.name.trim(),
+        email: parentForm.email.trim(),
+        password,
+        student: linkedStudent
+          ? `${linkedStudent.firstName} ${linkedStudent.lastName} (${linkedStudent.regNumber})`
+          : parentForm.linkedStudentReg.trim().toUpperCase()
+      });
+      setParentMsg({
+        tone: 'ok',
+        text: `${parentForm.name.trim()} can now log in to the Parent portal.`
+      });
+      setParentForm({
+        name: '',
+        email: '',
+        phone: '',
+        linkedStudentReg: '',
+        linkedStudentName: ''
+      });
+    } catch (err) {
+      setParentMsg({
+        tone: 'error',
+        text: err instanceof Error ? err.message : 'Could not create the parent account.'
+      });
+    } finally {
+      setParentBusy(false);
     }
   };
 
@@ -386,6 +508,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
         items={[
           { id: 'OVERVIEW', label: 'Overview', icon: <BarChart3 className="w-3.5 h-3.5" /> },
           { id: 'STAFF', label: 'Staff', icon: <UserCog className="w-3.5 h-3.5" /> },
+          { id: 'PARENTS', label: 'Parents', icon: <UserCheck className="w-3.5 h-3.5" /> },
           { id: 'STUDENTS', label: 'Students', icon: <UserPlus className="w-3.5 h-3.5" /> },
           { id: 'CLASSES', label: 'Classes', icon: <Layers className="w-3.5 h-3.5" /> },
           {
@@ -584,7 +707,9 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                   </div>
                 </div>
                 <p className="text-[11px] text-orange-800">
-                  {credentials.name} · {credentials.role}. Shown once — store it securely.
+                  {credentials.name} · {credentials.role}. Shown once — store it securely. If your
+                  Supabase project requires email confirmation, confirm the address before the
+                  first login.
                 </p>
               </div>
             )}
@@ -622,6 +747,179 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                         <p className="flex items-center justify-end gap-1 text-[10px] text-slate-400 mt-1">
                           <Mail className="w-3 h-3" />
                           <span className="truncate max-w-[140px]">{member.email}</span>
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SectionCard>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------- PARENTS ------------------------------- */}
+      {tab === 'PARENTS' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <SectionCard
+            title="Create parent account"
+            subtitle="Linked to a pupil"
+            icon={<UserCheck className="w-5 h-5" />}
+            className="lg:col-span-1"
+            bodyClassName="p-4 sm:p-5"
+          >
+            <form onSubmit={handleRegisterParent} className="space-y-3">
+              <Field label="Full name">
+                <input
+                  className={inputCls}
+                  placeholder="e.g. Mugisha Diane"
+                  value={parentForm.name}
+                  onChange={(e) => setParentForm((f) => ({ ...f, name: e.target.value }))}
+                />
+              </Field>
+              <Field label="Email address">
+                <input
+                  type="email"
+                  className={inputCls}
+                  placeholder="parent@example.com"
+                  value={parentForm.email}
+                  onChange={(e) => setParentForm((f) => ({ ...f, email: e.target.value }))}
+                />
+              </Field>
+              <Field label="Phone (optional)">
+                <input
+                  className={inputCls}
+                  placeholder="+250 7xx xxx xxx"
+                  value={parentForm.phone}
+                  onChange={(e) => setParentForm((f) => ({ ...f, phone: e.target.value }))}
+                />
+              </Field>
+              <Field label="Child registration number">
+                <input
+                  className={`${inputCls} font-mono uppercase`}
+                  placeholder="IRR-2026-001"
+                  list="parent-student-regs"
+                  value={parentForm.linkedStudentReg}
+                  onChange={(e) =>
+                    setParentForm((f) => ({ ...f, linkedStudentReg: e.target.value }))
+                  }
+                />
+                <datalist id="parent-student-regs">
+                  {students.map((student) => (
+                    <option key={student.id} value={student.regNumber}>
+                      {student.firstName} {student.lastName}
+                    </option>
+                  ))}
+                </datalist>
+              </Field>
+              <Field label="Child full name (optional)">
+                <input
+                  className={inputCls}
+                  placeholder="e.g. Mugisha Kevin"
+                  value={parentForm.linkedStudentName}
+                  onChange={(e) =>
+                    setParentForm((f) => ({ ...f, linkedStudentName: e.target.value }))
+                  }
+                />
+              </Field>
+              <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                <KeyRound className="w-3.5 h-3.5 text-orange-500" />
+                A secure password is generated automatically on submit.
+              </p>
+              <button
+                type="submit"
+                disabled={parentBusy}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-bold text-white bg-orange-500 hover:bg-orange-600 transition-colors disabled:opacity-50"
+              >
+                {parentBusy ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <UserPlus className="w-4 h-4" />
+                )}
+                Create parent account
+              </button>
+              {parentMsg && <Notice tone={parentMsg.tone}>{parentMsg.text}</Notice>}
+            </form>
+          </SectionCard>
+
+          <div className="lg:col-span-2 space-y-4">
+            {parentCredentials && (
+              <div className="rounded-xl border border-orange-200 bg-orange-50 p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="w-4 h-4 text-orange-600" />
+                  <p className="text-sm font-bold text-orange-900">Share these login credentials</p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-lg bg-white border border-orange-200 p-3">
+                    <p className="text-[10px] font-semibold text-slate-500 uppercase">Email</p>
+                    <div className="flex items-center justify-between gap-2 mt-1">
+                      <span className="font-mono text-slate-800 break-all">
+                        {parentCredentials.email}
+                      </span>
+                      <CopyButton value={parentCredentials.email} />
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-white border border-orange-200 p-3">
+                    <p className="text-[10px] font-semibold text-slate-500 uppercase">
+                      Temporary password
+                    </p>
+                    <div className="flex items-center justify-between gap-2 mt-1">
+                      <span className="font-mono text-slate-800 break-all">
+                        {parentCredentials.password}
+                      </span>
+                      <CopyButton value={parentCredentials.password} />
+                    </div>
+                  </div>
+                </div>
+                <p className="text-[11px] text-orange-800">
+                  {parentCredentials.name} · linked to {parentCredentials.student}. Shown once —
+                  store it securely. If your Supabase project requires email confirmation, confirm
+                  the address before the first login.
+                </p>
+              </div>
+            )}
+
+            <SectionCard
+              title="Parent contacts"
+              subtitle={`${parentDirectory.length} guardians on record`}
+              icon={<Users className="w-5 h-5" />}
+            >
+              {parentDirectory.length === 0 ? (
+                <EmptyState
+                  title="No parents on record"
+                  message="Register a student with parent contact details or create a parent account on the left."
+                />
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {parentDirectory.map((parent) => (
+                    <div
+                      key={parent.email}
+                      className="p-4 flex items-start justify-between gap-3"
+                    >
+                      <div className="flex items-start gap-3 min-w-0">
+                        <span className="w-9 h-9 shrink-0 rounded-full bg-orange-100 text-orange-700 flex items-center justify-center text-xs font-bold">
+                          {parent.name
+                            .split(' ')
+                            .map((p) => p[0])
+                            .slice(0, 2)
+                            .join('')}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-slate-800 truncate">
+                            {parent.name}
+                          </p>
+                          <p className="text-[11px] text-slate-500 truncate">{parent.email}</p>
+                          {parent.phone && (
+                            <p className="text-[10px] text-slate-400">{parent.phone}</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0 max-w-[45%]">
+                        <Badge tone="orange">
+                          {parent.children.length} {parent.children.length === 1 ? 'child' : 'children'}
+                        </Badge>
+                        <p className="text-[10px] text-slate-400 mt-1 truncate">
+                          {parent.children.join(', ')}
                         </p>
                       </div>
                     </div>

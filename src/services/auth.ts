@@ -1,4 +1,5 @@
 import { UserRole } from '../types';
+import { HEADMASTER_ACCOUNT, toAuthEmail } from '../config/headmaster';
 import {
   SUPABASE_ANON_KEY,
   SUPABASE_AUTH_URL,
@@ -10,12 +11,13 @@ import {
  * Authentication store.
  *
  * When Supabase is configured (`VITE_SUPABASE_URL` + anon key), sign-in and
- * parent registration are handled by Supabase Auth. If the project is not
- * configured (or the auth endpoint is unreachable), the service falls back to
- * the local demo credential store so every portal remains testable.
+ * account registration are handled by Supabase Auth. If the project is not
+ * configured (or the auth endpoint is unreachable), the service falls back to a
+ * local credential store that contains only the permanent Headmaster account.
  *
- * Production note: demo passwords live in memory/localStorage and should be
- * removed once real Supabase accounts are provisioned.
+ * Demo staff accounts have been removed. Real staff, teacher and parent logins
+ * are created by the Headmaster through the portal (or by the provisioning
+ * script) and stored in Supabase Auth.
  */
 
 const ACCOUNTS_KEY = 'irere.auth.accounts.v1';
@@ -45,44 +47,32 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   SPONSOR: 'Sponsor'
 };
 
-const DEFAULT_STAFF: AuthAccount[] = [
-  {
-    id: 'demo-headmaster',
-    name: 'Mukamana Claudine',
-    email: 'headmaster@irerenursery.rw',
-    password: 'Irere@2026',
-    role: 'HEADMASTER',
-    title: 'Headmaster',
-    createdAt: '2026-01-01T00:00:00.000Z'
-  },
-  {
-    id: 'demo-accountant',
-    name: 'Habimana Eric',
-    email: 'accountant@irerenursery.rw',
-    password: 'Irere@2026',
-    role: 'ACCOUNTANT',
-    title: 'School Accountant',
-    createdAt: '2026-01-01T00:00:00.000Z'
-  },
-  {
-    id: 'demo-teacher',
-    name: 'Uwimana Aline',
-    email: 'teacher@irerenursery.rw',
-    password: 'Irere@2026',
-    role: 'TEACHER',
-    title: 'Lead Teacher',
-    createdAt: '2026-01-01T00:00:00.000Z'
-  },
-  {
-    id: 'demo-sponsor',
-    name: 'Irere Education Partner',
-    email: 'sponsor@irerenursery.rw',
-    password: 'Irere@2026',
-    role: 'SPONSOR',
-    title: 'Read-only Sponsor',
-    createdAt: '2026-01-01T00:00:00.000Z'
-  }
-];
+const BUILT_IN_ACCOUNTS: AuthAccount[] = [HEADMASTER_ACCOUNT];
+
+/**
+ * Accounts created by older demo builds. They are filtered out of the local
+ * store so a browser that used the app before this release starts clean.
+ */
+const LEGACY_DEMO_IDS = new Set([
+  'demo-headmaster',
+  'demo-accountant',
+  'demo-teacher',
+  'demo-sponsor'
+]);
+
+const LEGACY_DEMO_EMAILS = new Set([
+  'headmaster@irerenursery.rw',
+  'accountant@irerenursery.rw',
+  'teacher@irerenursery.rw',
+  'sponsor@irerenursery.rw'
+]);
+
+function isLegacyDemoAccount(account: AuthAccount): boolean {
+  return (
+    LEGACY_DEMO_IDS.has(account.id) ||
+    LEGACY_DEMO_EMAILS.has(normalizeEmail(account.email))
+  );
+}
 
 function canUseStorage(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
@@ -94,7 +84,8 @@ function readStoredAccounts(): AuthAccount[] {
     const raw = window.localStorage.getItem(ACCOUNTS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as AuthAccount[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as AuthAccount[]).filter((account) => !isLegacyDemoAccount(account));
   } catch {
     return [];
   }
@@ -110,17 +101,27 @@ function writeStoredAccounts(accounts: AuthAccount[]): void {
   }
 }
 
-/** All accounts, with saved accounts overriding the built-in demo accounts. */
+/**
+ * All accounts. Stored accounts are merged first so the permanent Headmaster
+ * account always wins and its credentials can never be shadowed by old data.
+ */
 export function getAccounts(): AuthAccount[] {
   const stored = readStoredAccounts();
   const merged = new Map<string, AuthAccount>();
-  DEFAULT_STAFF.forEach((account) => merged.set(normalizeEmail(account.email), account));
   stored.forEach((account) => merged.set(normalizeEmail(account.email), account));
+  BUILT_IN_ACCOUNTS.forEach((account) =>
+    merged.set(normalizeEmail(account.email), account)
+  );
   return Array.from(merged.values());
 }
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
+}
+
+/** Accepts either an email address or a phone number as the login identifier. */
+export function normalizeIdentifier(identifier: string): string {
+  return normalizeEmail(toAuthEmail(identifier));
 }
 
 function toSession(account: AuthAccount): AuthSession {
@@ -157,6 +158,10 @@ export function loadSession(): AuthSession | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as AuthSession;
     if (!parsed || typeof parsed.role !== 'string' || typeof parsed.email !== 'string') {
+      return null;
+    }
+    if (isLegacyDemoAccount(parsed as AuthAccount)) {
+      window.localStorage.removeItem(SESSION_KEY);
       return null;
     }
     return parsed;
@@ -333,46 +338,101 @@ function isInvalidCredentials(error: unknown): boolean {
 /* Public API                                                                  */
 /* -------------------------------------------------------------------------- */
 
-export async function signIn(
+async function signInViaSupabase(
   email: string,
   password: string,
   role: UserRole
 ): Promise<AuthResult> {
-  const normalized = normalizeEmail(email);
+  const data = await authRequest<SupabaseAuthResponse>('/token?grant_type=password', {
+    email,
+    password
+  });
+
+  if (!data.access_token || !data.user) {
+    return {
+      ok: false,
+      error: 'Supabase did not return a session. Confirm your email and try again.'
+    };
+  }
+
+  const metadataRole = roleFromUser(data.user);
+  if (metadataRole && metadataRole !== role) {
+    return {
+      ok: false,
+      error: `These credentials are registered for the ${ROLE_LABELS[metadataRole]} portal. Please choose the correct portal.`
+    };
+  }
+
+  const session = sessionFromSupabase(data.user, role, email);
+  setSupabaseAccessToken(data.access_token);
+  saveSession(session);
+  return { ok: true, session };
+}
+
+/**
+ * Creates the permanent Headmaster account on first use when Supabase is
+ * configured but the account has not been provisioned yet. Running
+ * `npm run db:provision:headmaster` is still the recommended path because it
+ * uses the service role and can confirm the email immediately.
+ */
+async function ensureHeadmasterAuth(): Promise<boolean> {
+  try {
+    await authRequest<SupabaseAuthResponse>('/signup', {
+      email: HEADMASTER_ACCOUNT.email,
+      password: HEADMASTER_ACCOUNT.password,
+      data: {
+        role: HEADMASTER_ACCOUNT.role,
+        full_name: HEADMASTER_ACCOUNT.name,
+        phone: HEADMASTER_ACCOUNT.phone,
+        title: HEADMASTER_ACCOUNT.title
+      }
+    });
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (/already|registered|exists|duplicate/i.test(message)) {
+      return true;
+    }
+    console.warn('[auth] Could not provision the Headmaster account automatically.', error);
+    return false;
+  }
+}
+
+export async function signIn(
+  identifier: string,
+  password: string,
+  role: UserRole
+): Promise<AuthResult> {
+  const normalized = normalizeIdentifier(identifier);
 
   if (isSupabaseConfigured()) {
     try {
-      const data = await authRequest<SupabaseAuthResponse>(
-        '/token?grant_type=password',
-        { email: normalized, password }
-      );
-
-      if (!data.access_token || !data.user) {
-        return {
-          ok: false,
-          error: 'Supabase did not return a session. Confirm your email and try again.'
-        };
-      }
-
-      const metadataRole = roleFromUser(data.user);
-      if (metadataRole && metadataRole !== role) {
-        return {
-          ok: false,
-          error: `These credentials are registered for the ${ROLE_LABELS[metadataRole]} portal. Please choose the correct portal.`
-        };
-      }
-
-      const session = sessionFromSupabase(data.user, role, normalized);
-      setSupabaseAccessToken(data.access_token);
-      saveSession(session);
-      return { ok: true, session };
+      return await signInViaSupabase(normalized, password, role);
     } catch (error) {
-      // Fall back to local/demo credentials so the school can keep using the
-      // portals before every Supabase Auth user has been provisioned.
+      const isHeadmasterLogin =
+        normalized === normalizeEmail(HEADMASTER_ACCOUNT.email) &&
+        password === HEADMASTER_ACCOUNT.password;
+
+      if (isHeadmasterLogin && isInvalidCredentials(error)) {
+        const provisioned = await ensureHeadmasterAuth();
+        if (provisioned) {
+          try {
+            return await signInViaSupabase(normalized, password, role);
+          } catch (retryError) {
+            console.warn(
+              '[auth] Headmaster account exists but is not ready for sign-in yet.',
+              retryError
+            );
+          }
+        }
+      }
+
+      // The local store always contains the permanent Headmaster account, so
+      // the school can still sign in before Supabase Auth is provisioned.
       const local = signInLocal(normalized, password, role);
       if (local.ok) return local;
       if (isInvalidCredentials(error)) {
-        return { ok: false, error: 'Incorrect email or password. Please try again.' };
+        return { ok: false, error: 'Incorrect email/phone or password. Please try again.' };
       }
       console.warn('[auth] Supabase sign-in unavailable; using local credentials.', error);
       return local;
@@ -388,7 +448,7 @@ function signInLocal(email: string, password: string, role: UserRole): AuthResul
   );
 
   if (!account || account.password !== password) {
-    return { ok: false, error: 'Incorrect email or password. Please try again.' };
+    return { ok: false, error: 'Incorrect email/phone or password. Please try again.' };
   }
 
   if (account.role !== role) {
@@ -412,9 +472,24 @@ export interface ParentRegistrationInput {
   linkedStudentName?: string;
 }
 
-export async function registerParent(
+export type AccountProvisionResult =
+  | {
+      ok: true;
+      session?: AuthSession;
+      accessToken?: string;
+      requiresEmailConfirmation?: boolean;
+    }
+  | { ok: false; error: string };
+
+/**
+ * Creates a real parent account in Supabase Auth (or the local store when
+ * Supabase is not configured) without changing the active session. This is used
+ * by the Headmaster portal so registering a parent does not log the Headmaster
+ * out.
+ */
+export async function provisionParentAccount(
   input: ParentRegistrationInput
-): Promise<AuthResult> {
+): Promise<AccountProvisionResult> {
   const email = normalizeEmail(input.email);
 
   if (isSupabaseConfigured()) {
@@ -431,18 +506,17 @@ export async function registerParent(
         }
       });
 
-      if (data.access_token && data.user) {
+      if (data.user) {
         const session = sessionFromSupabase(data.user, 'PARENT', email);
-        setSupabaseAccessToken(data.access_token);
-        saveSession(session);
-        return { ok: true, session };
+        return {
+          ok: true,
+          session,
+          accessToken: data.access_token,
+          requiresEmailConfirmation: !data.access_token
+        };
       }
 
-      return {
-        ok: false,
-        error:
-          'Account created. Check your email inbox to confirm it, then return here to log in.'
-      };
+      return { ok: true, requiresEmailConfirmation: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       const isDuplicate =
@@ -455,17 +529,18 @@ export async function registerParent(
         return { ok: false, error: message };
       }
 
-      console.warn(
-        '[auth] Supabase registration unavailable; using local account store.',
-        error
-      );
+      console.warn('[auth] Supabase parent registration failed.', error);
+      return {
+        ok: false,
+        error: message || 'Could not create the parent account in Supabase.'
+      };
     }
   }
 
-  return registerParentLocal(input);
+  return provisionParentLocal(input);
 }
 
-function registerParentLocal(input: ParentRegistrationInput): AuthResult {
+function provisionParentLocal(input: ParentRegistrationInput): AccountProvisionResult {
   const email = normalizeEmail(input.email);
 
   if (getAccounts().some((account) => normalizeEmail(account.email) === email)) {
@@ -489,9 +564,27 @@ function registerParentLocal(input: ParentRegistrationInput): AuthResult {
   };
 
   saveAccount(account);
-  const session = toSession(account);
-  saveSession(session);
-  return { ok: true, session };
+  return { ok: true, session: toSession(account) };
+}
+
+/** Self-service parent registration from the Parent portal. */
+export async function registerParent(
+  input: ParentRegistrationInput
+): Promise<AuthResult> {
+  const result = await provisionParentAccount(input);
+  if (!result.ok) return result;
+
+  if (!result.session) {
+    return {
+      ok: false,
+      error:
+        'Account created. Check your email inbox to confirm it, then return here to log in.'
+    };
+  }
+
+  if (result.accessToken) setSupabaseAccessToken(result.accessToken);
+  saveSession(result.session);
+  return { ok: true, session: result.session };
 }
 
 export interface StaffAccountInput {
@@ -525,9 +618,10 @@ export function registerStaffAccount(input: StaffAccountInput): void {
 }
 
 /**
- * Creates a Supabase Auth account for a new staff member without disturbing the
- * currently signed-in Headmaster session (the token is intentionally ignored).
- * Failures are logged and never block staff creation.
+ * Creates a real Supabase Auth account for a new staff member without
+ * disturbing the currently signed-in Headmaster session (the returned token is
+ * intentionally ignored). Errors are returned so the portal can avoid creating
+ * a staff record that cannot log in.
  */
 export async function provisionStaffAuth(input: {
   name: string;
@@ -535,21 +629,39 @@ export async function provisionStaffAuth(input: {
   password: string;
   role: UserRole;
   title: string;
-}): Promise<void> {
-  if (!isSupabaseConfigured()) return;
-  try {
-    await authRequest('/signup', {
-      email: normalizeEmail(input.email),
-      password: input.password,
-      data: {
-        role: input.role,
-        full_name: input.name,
-        title: input.title
-      }
-    });
-  } catch (error) {
-    console.warn('[auth] Could not provision Supabase staff account.', error);
+  phone?: string;
+}): Promise<AccountProvisionResult> {
+  const email = normalizeEmail(input.email);
+
+  if (isSupabaseConfigured()) {
+    try {
+      const data = await authRequest<SupabaseAuthResponse>('/signup', {
+        email,
+        password: input.password,
+        data: {
+          role: input.role,
+          full_name: input.name,
+          phone: input.phone ?? null,
+          title: input.title
+        }
+      });
+
+      return {
+        ok: true,
+        accessToken: data.access_token,
+        requiresEmailConfirmation: !data.access_token
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      console.warn('[auth] Could not provision Supabase staff account.', error);
+      return {
+        ok: false,
+        error: message || 'Could not create the staff login in Supabase.'
+      };
+    }
   }
+
+  return { ok: true };
 }
 
 /** Persists a looked-up pupil on the parent's account and active session. */
@@ -571,11 +683,4 @@ export function updateLinkedStudent(email: string, regNumber: string): AuthSessi
   }
 
   return account ? toSession({ ...account, linkedStudentReg: normalized }) : null;
-}
-
-export function getDemoCredentials(
-  role: UserRole
-): { email: string; password: string } | null {
-  const account = DEFAULT_STAFF.find((item) => item.role === role);
-  return account ? { email: account.email, password: account.password } : null;
 }

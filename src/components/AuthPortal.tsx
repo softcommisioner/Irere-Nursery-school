@@ -4,7 +4,6 @@ import { SCHOOL_INFO } from '../config/school';
 import {
   AuthSession,
   ROLE_LABELS,
-  getDemoCredentials,
   registerParent,
   signIn
 } from '../services/auth';
@@ -125,7 +124,6 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
   const [childReg, setChildReg] = useState('');
 
   const meta = PORTALS.find((portal) => portal.role === role) ?? PORTALS[0];
-  const demo = getDemoCredentials(role);
 
   const resetFeedback = () => {
     setError(null);
@@ -144,13 +142,6 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     setParentMode(mode);
     setError(null);
     setShowPassword(false);
-  };
-
-  const fillDemoAccount = () => {
-    if (!demo) return;
-    setEmail(demo.email);
-    setPassword(demo.password);
-    setError(null);
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -627,15 +618,15 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                     </div>
                   )}
 
-                  <Field label="Official work email">
+                  <Field label="Email or phone number">
                     <div className="relative">
                       <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
-                        type="email"
-                        autoComplete="email"
+                        type="text"
+                        autoComplete="username"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        placeholder="name@irerenursery.rw"
+                        placeholder="name@irerenursery.rw or 07xx xxx xxx"
                         className={`${inputCls} pl-9`}
                       />
                     </div>
@@ -683,17 +674,10 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
                       {role === 'SPONSOR'
                         ? 'Secure review-only access'
-                        : 'Use the password assigned by the Headmaster.'}
+                        : role === 'HEADMASTER'
+                          ? 'Headmaster signs in with the school phone number or email.'
+                          : 'Use the password assigned by the Headmaster.'}
                     </span>
-                    {demo && (
-                      <button
-                        type="button"
-                        onClick={fillDemoAccount}
-                        className="font-bold text-orange-600 hover:text-orange-700"
-                      >
-                        Use demo account
-                      </button>
-                    )}
                   </div>
                 </form>
               )}

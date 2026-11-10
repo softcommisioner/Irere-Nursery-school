@@ -467,35 +467,27 @@ export default function App() {
 
   const handleCreateStaff = async (input: api.CreateStaffInput): Promise<User> => {
     setActionError(null);
-    const persistCredentials = (member: User) => {
-      auth.registerStaffAccount({
-        id: member.id,
-        name: member.name,
-        email: member.email,
-        password: input.password,
-        role: member.role,
-        title: member.title,
-        phone: member.phone || undefined
-      });
-      void auth.provisionStaffAuth({
-        name: member.name,
-        email: member.email,
-        password: input.password,
-        role: member.role,
-        title: member.title
-      });
-    };
 
     if (!usingFallback) {
-      try {
-        const created = await api.createStaff(input);
-        setStaff((prev) => [...prev, created]);
-        persistCredentials(created);
-        return created;
-      } catch {
-        setUsingFallback(true);
+      // Create the login first so we never end up with a staff record that
+      // cannot sign in.
+      const provisioned = await auth.provisionStaffAuth({
+        name: input.name,
+        email: input.email,
+        password: input.password,
+        role: input.role,
+        title: input.title,
+        phone: input.phone
+      });
+      if (!provisioned.ok) {
+        throw new Error(provisioned.error);
       }
+
+      const created = await api.createStaff(input);
+      setStaff((prev) => [...prev, created]);
+      return created;
     }
+
     const created: User = {
       id: generateId('staff'),
       name: input.name,
@@ -505,8 +497,26 @@ export default function App() {
       title: input.title
     };
     setStaff((prev) => [...prev, created]);
-    persistCredentials(created);
+    auth.registerStaffAccount({
+      id: created.id,
+      name: created.name,
+      email: created.email,
+      password: input.password,
+      role: created.role,
+      title: created.title,
+      phone: created.phone || undefined
+    });
     return created;
+  };
+
+  const handleRegisterParent = async (
+    input: auth.ParentRegistrationInput
+  ): Promise<void> => {
+    setActionError(null);
+    const result = await auth.provisionParentAccount(input);
+    if (!result.ok) {
+      throw new Error(result.error);
+    }
   };
 
   const handleRegisterStudent = async (
@@ -596,6 +606,7 @@ export default function App() {
             onApprove={(id) => handleReviewAttendance(id, 'APPROVED')}
             onReject={(id) => handleReviewAttendance(id, 'REJECTED')}
             onCreateStaff={handleCreateStaff}
+            onRegisterParent={handleRegisterParent}
             onRegisterStudent={handleRegisterStudent}
             onCreateClass={handleCreateClass}
           />
@@ -753,7 +764,7 @@ export default function App() {
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>
                     <span className="font-bold">Offline mode.</span> The backend is not reachable
-                    {loadError ? ` (${loadError})` : ''}. Showing local demo data — your changes are
+                    {loadError ? ` (${loadError})` : ''}. Showing local data — your changes are
                     kept in this browser session and every portal remains fully usable.
                   </span>
                 </div>

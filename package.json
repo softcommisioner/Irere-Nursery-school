@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "db:reset:demo": "node scripts/reset-demo-data.mjs",
     "db:wipe:demo": "node scripts/supabase-wipe-demo-data.mjs",
-    "db:wipe:demo:dry": "node scripts/supabase-wipe-demo-data.mjs --dry-run"
+    "db:wipe:demo:dry": "node scripts/supabase-wipe-demo-data.mjs --dry-run",
+    "db:provision:headmaster": "node scripts/provision-headmaster.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

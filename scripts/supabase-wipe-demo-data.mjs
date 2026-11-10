@@ -26,6 +26,35 @@ const SERVICE_KEY =
   process.env.SUPABASE_SERVICE_KEY ??
   process.env.SERVICE_ROLE_KEY;
 
+const EMAIL_DOMAIN =
+  process.env.SCHOOL_EMAIL_DOMAIN ??
+  process.env.VITE_SCHOOL_EMAIL_DOMAIN ??
+  'irerenursery.rw';
+
+const HEADMASTER_IDENTIFIER =
+  process.env.HEADMASTER_PHONE ??
+  process.env.HEADMASTER_EMAIL ??
+  process.env.VITE_HEADMASTER_PHONE ??
+  process.env.VITE_HEADMASTER_EMAIL ??
+  '0788733564';
+
+function toAuthEmail(identifier) {
+  const trimmed = identifier.trim().toLowerCase();
+  if (/^\+?[\d\s()-]+$/.test(trimmed) && /\d/.test(trimmed)) {
+    return `${trimmed.replace(/\D/g, '')}@${EMAIL_DOMAIN}`;
+  }
+  return trimmed;
+}
+
+const HEADMASTER_EMAIL = toAuthEmail(HEADMASTER_IDENTIFIER);
+
+const LEGACY_DEMO_EMAILS = new Set([
+  'headmaster@irerenursery.rw',
+  'accountant@irerenursery.rw',
+  'teacher@irerenursery.rw',
+  'sponsor@irerenursery.rw'
+]);
+
 const argv = process.argv.slice(2);
 const hasFlag = (flag) => argv.includes(flag);
 const getArg = (name) => {
@@ -207,10 +236,13 @@ async function deleteAllRows(table) {
 
 async function wipeAuthUsers() {
   const adminEmails = new Set(
-    (process.env.ADMIN_EMAILS ?? '')
-      .split(',')
-      .map((email) => email.trim().toLowerCase())
-      .filter(Boolean)
+    [
+      HEADMASTER_EMAIL,
+      ...(process.env.ADMIN_EMAILS ?? '')
+        .split(',')
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean)
+    ].map((email) => email.trim().toLowerCase())
   );
 
   const allUsers = [];
@@ -240,7 +272,9 @@ async function wipeAuthUsers() {
   for (const user of allUsers) {
     const email = (user.email ?? '').toLowerCase();
     const role = String(user.app_metadata?.role ?? user.user_metadata?.role ?? '').toLowerCase();
-    const isCoreAdmin = ['admin', 'super_admin', 'system'].includes(role);
+    const isLegacyDemo = LEGACY_DEMO_EMAILS.has(email);
+    const isCoreAdmin =
+      !isLegacyDemo && ['admin', 'super_admin', 'system', 'headmaster'].includes(role);
 
     if (adminEmails.has(email) || isCoreAdmin) continue;
 
