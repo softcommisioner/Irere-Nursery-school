@@ -15,6 +15,8 @@ import {
 import {
   SupabaseError,
   isMissingTableError,
+  isSupabaseConfigured,
+  supabaseConfigError,
   supabaseRest
 } from './supabase';
 
@@ -36,12 +38,25 @@ import {
 
 export class ApiError extends Error {
   status: number;
+  code?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
+}
+
+/** Serialises an error for precise console.error output. */
+function errorDetails(error: unknown): Record<string, unknown> {
+  if (error instanceof ApiError || error instanceof SupabaseError) {
+    return { name: error.name, message: error.message, status: error.status, code: error.code };
+  }
+  if (error instanceof Error) {
+    return { name: error.name, message: error.message };
+  }
+  return { error };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -78,7 +93,9 @@ function fromRow<T>(value: unknown): T {
 
 function toApiError(error: unknown): ApiError {
   if (error instanceof ApiError) return error;
-  if (error instanceof SupabaseError) return new ApiError(error.message, error.status);
+  if (error instanceof SupabaseError) {
+    return new ApiError(error.message, error.status, error.code);
+  }
   if (error instanceof Error) return new ApiError(error.message, 0);
   return new ApiError('An unexpected error occurred while talking to Supabase.', 0);
 }
@@ -159,8 +176,9 @@ async function tableRequest<T>(
   }
 
   if (options.allowMissing) {
-    console.warn(
-      `[api] No Supabase table found for "${group}". Tried: ${candidates.join(', ')}.`
+    console.error(
+      `[api] No Supabase table found for "${group}". Tried: ${candidates.join(', ')}.`,
+      errorDetails(lastError)
     );
     return (options.method === 'GET' ? [] : undefined) as T;
   }
@@ -168,12 +186,57 @@ async function tableRequest<T>(
   throw toApiError(lastError);
 }
 
+/**
+ * Reads every row of a table group. Parsing is defensive:
+ * - A missing table (or any Supabase/runtime error) logs exact details to
+ *   `console.error` and resolves to `[]` so one broken table never fails the
+ *   whole live-data load.
+ * - A response that is not a JSON array (empty body, object, HTML page) is
+ *   reported and treated as "no rows" instead of throwing a malformed-response
+ *   error further down the line.
+ * - A completely unconfigured Supabase project still throws so the UI can show
+ *   the configuration banner.
+ */
 async function readList<T>(group: TableGroup): Promise<T[]> {
-  const rows = await tableRequest<unknown[]>(group, {
-    query: '?select=*',
-    allowMissing: true
-  });
-  return fromRow<T[]>(rows ?? []);
+  if (!isSupabaseConfigured()) {
+    throw new ApiError(supabaseConfigError(), 0);
+  }
+
+  try {
+    const rows = await tableRequest<unknown[]>(group, {
+      query: '?select=*',
+      allowMissing: true
+    });
+
+    if (rows === null || rows === undefined) return [];
+    if (!Array.isArray(rows)) {
+      console.error(
+        `[api] Unexpected Supabase payload for "${group}" — expected a JSON array, got ${typeof rows}.`,
+        errorDetails(rows)
+      );
+      return [];
+    }
+
+    try {
+      return fromRow<T[]>(rows);
+    } catch (err) {
+      console.error(
+        `[api] Could not parse rows for "${group}" (schema mismatch?). Tried tables: ${TABLE_CANDIDATES[
+          group
+        ].join(', ')}.`,
+        errorDetails(err)
+      );
+      return [];
+    }
+  } catch (error) {
+    console.error(
+      `[api] Failed to load "${group}" from Supabase. Tried tables: ${TABLE_CANDIDATES[
+        group
+      ].join(', ')}.`,
+      errorDetails(error)
+    );
+    return [];
+  }
 }
 
 async function insertOne<T>(group: TableGroup, payload: unknown): Promise<T> {
@@ -217,7 +280,7 @@ export async function getStudent(studentId: string): Promise<Student> {
   const rows = await tableRequest<unknown[]>('students', {
     query: `?select=*&id=eq.${encodeURIComponent(studentId)}`
   });
-  const list = fromRow<Student[]>(rows ?? []);
+  const list = Array.isArray(rows) ? fromRow<Student[]>(rows) : [];
   const found = list[0];
   if (!found) {
     throw new ApiError('Student not found.', 404);
@@ -420,7 +483,8 @@ export async function saveStudentAttendance(
     body: records,
     prefer: 'return=representation'
   });
-  return fromRow<StudentAttendanceRecord[]>(rows ?? []).map((record) => ({
+  const list = Array.isArray(rows) ? rows : [];
+  return fromRow<StudentAttendanceRecord[]>(list).map((record) => ({
     ...record,
     id: record.id ?? fallbackId('satt')
   }));

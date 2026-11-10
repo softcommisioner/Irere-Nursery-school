@@ -102,6 +102,12 @@ export default function App() {
       setFeedbacks(feedbackList);
       setEvaluations(evaluationList);
     } catch (err) {
+      // Log the exact Supabase error (status / code / message) so missing
+      // tables or schema mismatches can be pinpointed in the console. Table-
+      // level failures are already logged by the API layer and resolved to
+      // empty lists, so this only fires for project-wide problems (auth,
+      // network, configuration).
+      console.error('[loadData] Could not load live data from Supabase:', err);
       // Keep whatever was previously loaded on screen and surface the error so
       // the user can retry. No local/demo data is substituted.
       setLoadError(err instanceof Error ? err.message : 'Could not load data from Supabase.');

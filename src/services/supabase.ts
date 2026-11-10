@@ -177,7 +177,12 @@ export async function supabaseRest<T>(
   try {
     return JSON.parse(raw) as T;
   } catch {
-    throw new SupabaseError('Supabase returned a malformed response.', response.status);
+    throw new SupabaseError(
+      `Supabase returned a malformed response for "${path}" (status ${response.status}): ${raw
+        .trim()
+        .slice(0, 240)}`,
+      response.status
+    );
   }
 }
 
