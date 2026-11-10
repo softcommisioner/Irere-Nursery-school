@@ -268,6 +268,31 @@ export async function updateStudent(id: string, input: UpdateStudentInput): Prom
   };
 }
 
+export interface StudentPaymentStatusInput {
+  paidAmount: number;
+  balance: number;
+}
+
+/**
+ * Persists a student's running fee totals (paid amount / balance) after a
+ * payment is recorded so the figures survive refresh and logout.
+ */
+export async function updateStudentPaymentStatus(
+  id: string,
+  input: StudentPaymentStatusInput
+): Promise<Student> {
+  const updated = await patchOne<Student | undefined>('students', id, input);
+  if (!updated) {
+    throw new ApiError('Student not found or could not be updated.', 404);
+  }
+  return {
+    ...updated,
+    id: updated.id ?? id,
+    paidAmount: updated.paidAmount ?? input.paidAmount,
+    balance: updated.balance ?? input.balance
+  };
+}
+
 export async function deleteStudent(id: string): Promise<void> {
   await tableRequest<unknown[]>('students', {
     method: 'DELETE',

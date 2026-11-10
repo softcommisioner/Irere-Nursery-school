@@ -17,19 +17,7 @@ import { HERO_SLIDES, HeroSlide } from './config/heroImages';
 import * as api from './services/api';
 import * as auth from './services/auth';
 import { AuthSession, ROLE_LABELS } from './services/auth';
-import {
-  SEED_CLASSES,
-  SEED_CURRICULUM,
-  SEED_EVALUATIONS,
-  SEED_FEEDBACK,
-  SEED_LEDGER,
-  SEED_PAYMENTS,
-  SEED_STAFF,
-  SEED_STUDENT_ATTENDANCE,
-  SEED_STUDENTS,
-  SEED_TEACHER_ATTENDANCE
-} from './data/seed';
-import { generateId, generateRegistrationNumber } from './utils/generators';
+import { generateRegistrationNumber } from './utils/generators';
 import { LandingHero } from './components/LandingHero';
 import { AuthPortal } from './components/AuthPortal';
 import { HeadmasterPortal } from './components/HeadmasterPortal';
@@ -58,9 +46,9 @@ export default function App() {
   const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(HERO_SLIDES);
   const activeRole: UserRole = activeUser?.role ?? 'HEADMASTER';
 
-  // All data starts empty and is loaded from the backend. If the API is not
-  // reachable, the app falls back to local seed data so every portal stays
-  // fully interactive (see `usingFallback`).
+  // All data is loaded live from Supabase. Records created or edited in any
+  // portal are written directly to the database (INSERT/UPDATE/DELETE) — there
+  // is no local fallback, so nothing is lost on refresh or logout.
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
   const [staff, setStaff] = useState<User[]>([]);
@@ -73,7 +61,6 @@ export default function App() {
   const [evaluations, setEvaluations] = useState<StudentMilestoneEvaluation[]>([]);
 
   const [loading, setLoading] = useState(true);
-  const [usingFallback, setUsingFallback] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -114,22 +101,10 @@ export default function App() {
       setCurriculum(curriculumList);
       setFeedbacks(feedbackList);
       setEvaluations(evaluationList);
-      setUsingFallback(false);
     } catch (err) {
-      // Graceful fallback: keep the UI fully usable with local data instead of
-      // showing a dead "could not load" screen.
-      setClasses(SEED_CLASSES);
-      setStudents(SEED_STUDENTS);
-      setStaff(SEED_STAFF);
-      setTeacherAttendance(SEED_TEACHER_ATTENDANCE);
-      setStudentAttendance(SEED_STUDENT_ATTENDANCE);
-      setPayments(SEED_PAYMENTS);
-      setLedger(SEED_LEDGER);
-      setCurriculum(SEED_CURRICULUM);
-      setFeedbacks(SEED_FEEDBACK);
-      setEvaluations(SEED_EVALUATIONS);
-      setUsingFallback(true);
-      setLoadError(err instanceof Error ? err.message : 'Backend unavailable.');
+      // Keep whatever was previously loaded on screen and surface the error so
+      // the user can retry. No local/demo data is substituted.
+      setLoadError(err instanceof Error ? err.message : 'Could not load data from Supabase.');
     } finally {
       setLoading(false);
     }
@@ -156,6 +131,9 @@ export default function App() {
     setActiveUser(session);
     setParentLookupReg(session.linkedStudentReg);
     setView('PORTALS');
+    // Fetch the latest live records from Supabase whenever a user signs in to
+    // any portal so the session always starts from database truth.
+    void loadData();
   };
 
   const handleLogout = () => {
@@ -216,11 +194,15 @@ export default function App() {
   useEffect(() => () => revokeHeroObjectUrls(), [revokeHeroObjectUrls]);
 
   /* ---------------------------------------------------------------------- */
-  /* Data mutations — each tries the API first, then falls back to local     */
-  /* state when the backend is unavailable.                                  */
+  /* Data mutations — every write goes directly to Supabase. If a write     */
+  /* fails, the error is surfaced (and rethrown to the portal form) so the  */
+  /* user knows the record was not saved. No local-only fallback exists.    */
   /* ---------------------------------------------------------------------- */
 
   const today = () => new Date().toISOString().slice(0, 10);
+
+  const failMessage = (err: unknown, fallback: string) =>
+    err instanceof Error && err.message ? err.message : fallback;
 
   const nextRegNumber = () => {
     const nums = students
@@ -235,171 +217,107 @@ export default function App() {
 
   const handleReviewAttendance = async (id: string, status: 'APPROVED' | 'REJECTED') => {
     setActionError(null);
-    const apply = () =>
+    try {
+      const updated = await api.reviewTeacherAttendance(id, {
+        status,
+        reviewedBy: activeUser?.name ?? 'Headmaster',
+        headmasterRemarks:
+          status === 'APPROVED' ? 'Attendance verified and approved.' : undefined,
+        rejectionReason:
+          status === 'REJECTED' ? 'Check-in details could not be verified.' : undefined
+      });
       setTeacherAttendance((prev) =>
-        prev.map((rec) =>
-          rec.id === id
-            ? {
-                ...rec,
-                status,
-                reviewedBy: activeUser?.name ?? 'Headmaster',
-                reviewedAt: new Date().toISOString(),
-                headmasterRemarks:
-                  status === 'APPROVED' ? 'Attendance verified and approved.' : undefined,
-                rejectionReason:
-                  status === 'REJECTED' ? 'Check-in details could not be verified.' : undefined
-              }
-            : rec
-        )
+        prev.map((rec) => (rec.id === id ? { ...rec, ...updated } : rec))
       );
-
-    if (!usingFallback) {
-      try {
-        const updated = await api.reviewTeacherAttendance(id, {
-          status,
-          reviewedBy: activeUser?.name ?? 'Headmaster',
-          headmasterRemarks:
-            status === 'APPROVED' ? 'Attendance verified and approved.' : undefined,
-          rejectionReason:
-            status === 'REJECTED' ? 'Check-in details could not be verified.' : undefined
-        });
-        setTeacherAttendance((prev) =>
-          prev.map((rec) => (rec.id === id ? { ...rec, ...updated } : rec))
-        );
-        return;
-      } catch {
-        setUsingFallback(true);
-      }
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not review the attendance request.'));
     }
-    apply();
   };
 
   const handleTeacherCheckIn = async (notes: string) => {
     setActionError(null);
-    if (!usingFallback) {
-      try {
-        const created = await api.createTeacherCheckIn({
-          teacherId: activeUser?.id ?? 'current-teacher',
-          teacherName: activeUser?.name ?? 'Teacher',
-          date: today(),
-          checkInTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          notes: notes || undefined
-        });
-        setTeacherAttendance((prev) => [created, ...prev]);
-        return;
-      } catch {
-        setUsingFallback(true);
-      }
-    }
-    setTeacherAttendance((prev) => [
-      {
-        id: generateId('att'),
+    try {
+      const created = await api.createTeacherCheckIn({
         teacherId: activeUser?.id ?? 'current-teacher',
         teacherName: activeUser?.name ?? 'Teacher',
         date: today(),
         checkInTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        status: 'PENDING',
         notes: notes || undefined
-      },
-      ...prev
-    ]);
+      });
+      setTeacherAttendance((prev) => [created, ...prev]);
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not submit the check-in.'));
+      throw err;
+    }
   };
 
   const handleSaveStudentAttendance = async (
     records: Omit<StudentAttendanceRecord, 'id'>[]
   ) => {
     setActionError(null);
-    if (!usingFallback) {
-      try {
-        const saved = await api.saveStudentAttendance(records);
-        setStudentAttendance((prev) => {
-          const remaining = prev.filter(
-            (r) => !saved.some((s) => s.studentId === r.studentId && s.date === r.date)
-          );
-          return [...saved, ...remaining];
-        });
-        return;
-      } catch {
-        setUsingFallback(true);
-      }
+    try {
+      const saved = await api.saveStudentAttendance(records);
+      setStudentAttendance((prev) => {
+        const remaining = prev.filter(
+          (r) => !saved.some((s) => s.studentId === r.studentId && s.date === r.date)
+        );
+        return [...saved, ...remaining];
+      });
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not save the attendance.'));
+      throw err;
     }
-    const withIds = records.map((r) => ({ ...r, id: generateId('satt') }));
-    setStudentAttendance((prev) => {
-      const remaining = prev.filter(
-        (r) => !withIds.some((s) => s.studentId === r.studentId && s.date === r.date)
-      );
-      return [...withIds, ...remaining];
-    });
   };
 
   const handleUploadCurriculum = async (input: api.CurriculumUploadInput) => {
     setActionError(null);
-    if (!usingFallback) {
-      try {
-        const created = await api.uploadCurriculum(input);
-        setCurriculum((prev) => [created, ...prev]);
-        return;
-      } catch {
-        setUsingFallback(true);
-      }
+    try {
+      const created = await api.uploadCurriculum(input);
+      setCurriculum((prev) => [created, ...prev]);
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not upload the material.'));
+      throw err;
     }
-    setCurriculum((prev) => [
-      { ...input, id: generateId('cur'), uploadDate: today() },
-      ...prev
-    ]);
   };
 
   const handleSubmitFeedback = async (subject: string, message: string) => {
     if (!selectedStudent) return;
     setActionError(null);
-    if (!usingFallback) {
-      try {
-        const created = await api.submitFeedback({
-          parentId: selectedStudent.parentEmail || selectedStudent.id,
-          parentName: selectedStudent.parentName,
-          studentName: `${selectedStudent.firstName} ${selectedStudent.lastName}`,
-          studentClass: selectedStudent.className,
-          subject,
-          message
-        });
-        setFeedbacks((prev) => [created, ...prev]);
-        return;
-      } catch {
-        setUsingFallback(true);
-      }
-    }
-    setFeedbacks((prev) => [
-      {
-        id: generateId('fb'),
+    try {
+      const created = await api.submitFeedback({
         parentId: selectedStudent.parentEmail || selectedStudent.id,
         parentName: selectedStudent.parentName,
         studentName: `${selectedStudent.firstName} ${selectedStudent.lastName}`,
         studentClass: selectedStudent.className,
         subject,
-        message,
-        createdAt: new Date().toISOString(),
-        status: 'PENDING_REPLY'
-      },
-      ...prev
-    ]);
+        message
+      });
+      setFeedbacks((prev) => [created, ...prev]);
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not send the message.'));
+      throw err;
+    }
   };
 
   const handleRecordPayment = async (input: api.RecordPaymentInput) => {
     setActionError(null);
-    if (!usingFallback) {
+    try {
+      const created = await api.recordPayment(input);
+      setPayments((prev) => [created, ...prev]);
+
+      // Persist the student's new balance and the matching ledger entry so
+      // the payment survives refresh and logout.
+      const student = students.find((s) => s.id === created.studentId);
+      const paid = (student?.paidAmount ?? 0) + created.amount;
+      const balance = Math.max(0, (student?.tuitionFeeTerm ?? 0) - paid);
+
       try {
-        const created = await api.recordPayment(input);
-        setPayments((prev) => [created, ...prev]);
-        setStudents((prev) =>
-          prev.map((s) => {
-            if (s.id !== created.studentId) return s;
-            const paid = s.paidAmount + created.amount;
-            return { ...s, paidAmount: paid, balance: Math.max(0, s.tuitionFeeTerm - paid) };
-          })
-        );
-        setLedger((prev) => [
-          {
-            id: `ledger-${created.id}`,
+        const [updatedStudent, ledgerCreated] = await Promise.all([
+          api.updateStudentPaymentStatus(created.studentId, {
+            paidAmount: paid,
+            balance
+          }),
+          api.createLedgerEntry({
             entryDate: created.paymentDate,
             description: `Tuition payment: ${created.studentName} (${created.studentReg})`,
             type: 'INCOME',
@@ -408,67 +326,42 @@ export default function App() {
             referenceDocNumber: created.receiptNumber,
             recordedBy: created.receivedBy,
             paymentMethod: created.paymentMethod
-          },
-          ...prev
+          })
         ]);
-        return;
-      } catch {
-        setUsingFallback(true);
+        setStudents((prev) =>
+          prev.map((s) => (s.id === updatedStudent.id ? { ...s, ...updatedStudent } : s))
+        );
+        setLedger((prev) => [ledgerCreated, ...prev]);
+      } catch (err) {
+        setActionError(
+          `Payment saved, but the balance or ledger update failed: ${failMessage(
+            err,
+            'please reload to resync.'
+          )}`
+        );
       }
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not record the payment.'));
+      throw err;
     }
-    const receiptNumber = `RCP-${new Date().getFullYear()}-${String(
-      payments.length + 1
-    ).padStart(4, '0')}`;
-    const created: FeePayment = {
-      ...input,
-      id: generateId('pay'),
-      receiptNumber,
-      status: 'VERIFIED'
-    };
-    setPayments((prev) => [created, ...prev]);
-    setStudents((prev) =>
-      prev.map((s) => {
-        if (s.id !== created.studentId) return s;
-        const paid = s.paidAmount + created.amount;
-        return { ...s, paidAmount: paid, balance: Math.max(0, s.tuitionFeeTerm - paid) };
-      })
-    );
-    setLedger((prev) => [
-      {
-        id: generateId('led'),
-        entryDate: created.paymentDate,
-        description: `Tuition payment: ${created.studentName} (${created.studentReg})`,
-        type: 'INCOME',
-        category: 'TUITION_FEE',
-        amount: created.amount,
-        referenceDocNumber: receiptNumber,
-        recordedBy: created.receivedBy,
-        paymentMethod: created.paymentMethod
-      },
-      ...prev
-    ]);
   };
 
   const handleAddLedgerEntry = async (input: api.LedgerEntryInput) => {
     setActionError(null);
-    if (!usingFallback) {
-      try {
-        const created = await api.createLedgerEntry(input);
-        setLedger((prev) => [created, ...prev]);
-        return;
-      } catch {
-        setUsingFallback(true);
-      }
+    try {
+      const created = await api.createLedgerEntry(input);
+      setLedger((prev) => [created, ...prev]);
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not add the ledger entry.'));
+      throw err;
     }
-    setLedger((prev) => [{ ...input, id: generateId('led') }, ...prev]);
   };
 
   /* ------------------------- Headmaster management ---------------------- */
 
   const handleCreateStaff = async (input: api.CreateStaffInput): Promise<User> => {
     setActionError(null);
-
-    if (!usingFallback) {
+    try {
       // Create the login first so we never end up with a staff record that
       // cannot sign in.
       const provisioned = await auth.provisionStaffAuth({
@@ -486,27 +379,10 @@ export default function App() {
       const created = await api.createStaff(input);
       setStaff((prev) => [...prev, created]);
       return created;
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not create the staff account.'));
+      throw err;
     }
-
-    const created: User = {
-      id: generateId('staff'),
-      name: input.name,
-      email: input.email,
-      phone: input.phone ?? '',
-      role: input.role,
-      title: input.title
-    };
-    setStaff((prev) => [...prev, created]);
-    auth.registerStaffAccount({
-      id: created.id,
-      name: created.name,
-      email: created.email,
-      password: input.password,
-      role: created.role,
-      title: created.title,
-      phone: created.phone || undefined
-    });
-    return created;
   };
 
   const handleRegisterParent = async (
@@ -515,7 +391,9 @@ export default function App() {
     setActionError(null);
     const result = await auth.provisionParentAccount(input);
     if (!result.ok) {
-      throw new Error(result.error);
+      const error = new Error(result.error);
+      setActionError(result.error);
+      throw error;
     }
   };
 
@@ -524,49 +402,31 @@ export default function App() {
   ): Promise<Student> => {
     setActionError(null);
     const regNumber = nextRegNumber();
-    if (!usingFallback) {
-      try {
-        const created = await api.createStudent({ ...input, regNumber });
-        setStudents((prev) => [...prev, created]);
-        setClasses((prev) =>
-          prev.map((c) =>
-            c.id === created.classId ? { ...c, studentCount: c.studentCount + 1 } : c
-          )
-        );
-        return created;
-      } catch {
-        setUsingFallback(true);
-      }
+    try {
+      const created = await api.createStudent({ ...input, regNumber });
+      setStudents((prev) => [...prev, created]);
+      setClasses((prev) =>
+        prev.map((c) =>
+          c.id === created.classId ? { ...c, studentCount: c.studentCount + 1 } : c
+        )
+      );
+      return created;
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not register the student.'));
+      throw err;
     }
-    const created: Student = {
-      ...input,
-      id: generateId('stu'),
-      regNumber,
-      paidAmount: 0,
-      balance: input.tuitionFeeTerm,
-      emergencyContact: ''
-    };
-    setStudents((prev) => [...prev, created]);
-    setClasses((prev) =>
-      prev.map((c) => (c.id === created.classId ? { ...c, studentCount: c.studentCount + 1 } : c))
-    );
-    return created;
   };
 
   const handleCreateClass = async (input: api.CreateClassInput): Promise<SchoolClass> => {
     setActionError(null);
-    if (!usingFallback) {
-      try {
-        const created = await api.createClass(input);
-        setClasses((prev) => [...prev, created]);
-        return created;
-      } catch {
-        setUsingFallback(true);
-      }
+    try {
+      const created = await api.createClass(input);
+      setClasses((prev) => [...prev, created]);
+      return created;
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not create the class.'));
+      throw err;
     }
-    const created: SchoolClass = { ...input, id: generateId('cls'), studentCount: 0 };
-    setClasses((prev) => [...prev, created]);
-    return created;
   };
 
   const handleUpdateStudent = async (
@@ -574,36 +434,24 @@ export default function App() {
     input: api.UpdateStudentInput
   ): Promise<void> => {
     setActionError(null);
-    if (!usingFallback) {
-      try {
-        const updated = await api.updateStudent(id, input);
-        setStudents((prev) => prev.map((s) => (s.id === id ? { ...s, ...updated } : s)));
-        return;
-      } catch {
-        setUsingFallback(true);
-      }
+    try {
+      const updated = await api.updateStudent(id, input);
+      setStudents((prev) => prev.map((s) => (s.id === id ? { ...s, ...updated } : s)));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not update the student.'));
+      throw err;
     }
-    setStudents((prev) =>
-      prev.map((s) =>
-        s.id === id
-          ? { ...s, ...input, balance: Math.max(0, input.tuitionFeeTerm - s.paidAmount) }
-          : s
-      )
-    );
   };
 
   const handleDeleteStudent = async (id: string): Promise<void> => {
     setActionError(null);
-    if (!usingFallback) {
-      try {
-        await api.deleteStudent(id);
-        setStudents((prev) => prev.filter((s) => s.id !== id));
-        return;
-      } catch {
-        setUsingFallback(true);
-      }
+    try {
+      await api.deleteStudent(id);
+      setStudents((prev) => prev.filter((s) => s.id !== id));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not delete the student.'));
+      throw err;
     }
-    setStudents((prev) => prev.filter((s) => s.id !== id));
   };
 
   /* ---------------------------------------------------------------------- */
@@ -799,14 +647,14 @@ export default function App() {
           </div>
         ) : (
           <div className="space-y-4">
-            {usingFallback && (
+            {loadError && (
               <div className="flex flex-col sm:flex-row sm:items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
                 <div className="flex items-start gap-2 flex-1">
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>
-                    <span className="font-bold">Offline mode.</span> The backend is not reachable
-                    {loadError ? ` (${loadError})` : ''}. Showing local data — your changes are
-                    kept in this browser session and every portal remains fully usable.
+                    <span className="font-bold">Could not load live data from Supabase.</span>{' '}
+                    {loadError}. Any records you add are written directly to the database —
+                    nothing is stored only in this browser. Use the button to retry loading.
                   </span>
                 </div>
                 <button
@@ -814,7 +662,7 @@ export default function App() {
                   className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-white bg-orange-500 hover:bg-orange-600 transition-colors shrink-0"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
-                  Reconnect
+                  Retry
                 </button>
               </div>
             )}
