@@ -214,3 +214,34 @@ export function isMissingTableError(error: unknown): boolean {
     /could not find the table|does not exist|schema cache/i.test(error.message)
   );
 }
+
+/**
+ * PostgREST answers with 405 Method Not Allowed when the resolved relation
+ * exists but cannot serve the method — typically a read-only view being
+ * POST/PATCH/DELETEd (e.g. a `profiles`/`users` view over `auth.users`).
+ */
+export function isMethodNotAllowedError(error: unknown): boolean {
+  if (!(error instanceof SupabaseError)) return false;
+  return (
+    error.status === 405 ||
+    error.code === 'PGRST204' ||
+    /method not allowed|cannot insert into|cannot update|not updatable|inseparable/i.test(
+      error.message
+    )
+  );
+}
+
+/**
+ * Row Level Security policies or missing grants reject writes with 403 /
+ * 42501 "permission denied". These point at a real table, so the fix belongs
+ * in the database (policies or privileges), not in the request format.
+ */
+export function isPermissionDeniedError(error: unknown): boolean {
+  if (!(error instanceof SupabaseError)) return false;
+  return (
+    error.status === 403 ||
+    error.code === '42501' ||
+    error.code === '42502' ||
+    /permission denied|row-level security|rls policy|violates row-level/i.test(error.message)
+  );
+}

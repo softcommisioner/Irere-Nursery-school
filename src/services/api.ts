@@ -14,7 +14,9 @@ import {
 } from '../types';
 import {
   SupabaseError,
+  isMethodNotAllowedError,
   isMissingTableError,
+  isPermissionDeniedError,
   isSupabaseConfigured,
   supabaseConfigError,
   supabaseRest
@@ -150,17 +152,21 @@ async function tableRequest<T>(
   group: TableGroup,
   options: TableRequestOptions = {}
 ): Promise<T> {
+  const method = options.method ?? 'GET';
   const cached = resolvedTables.get(group);
   const candidates = cached
     ? [cached, ...TABLE_CANDIDATES[group].filter((name) => name !== cached)]
     : [...TABLE_CANDIDATES[group]];
 
   let lastError: unknown = null;
+  // First non-retryable-but-405 style failure (e.g. a read-only view) — thrown
+  // at the end if no other candidate accepts the request.
+  let methodError: unknown = null;
 
   for (const table of candidates) {
     try {
       const result = await supabaseRest<T>(`/${table}${options.query ?? ''}`, {
-        method: options.method ?? 'GET',
+        method,
         body: options.body === undefined ? undefined : JSON.stringify(toRow(options.body)),
         headers: options.prefer ? { Prefer: options.prefer } : undefined
       });
@@ -168,9 +174,42 @@ async function tableRequest<T>(
       return result;
     } catch (error) {
       lastError = error;
-      if (isMissingTableError(error)) {
+
+      // Missing table (404) or method-not-allowed (405, typically a
+      // read-only view) means this candidate cannot serve the request — log
+      // the exact table, method and payload, then try the next candidate.
+      if (isMissingTableError(error) || isMethodNotAllowedError(error)) {
+        if (isMethodNotAllowedError(error) && methodError === null) {
+          methodError = error;
+        }
+        console.error(
+          `[api] ${method} /rest/v1/${table}${options.query ?? ''} was rejected:`,
+          { payload: options.body, details: errorDetails(error) }
+        );
         continue;
       }
+
+      // RLS policies / missing grants point at a real table: fail fast with an
+      // actionable message naming the relation instead of guessing.
+      if (isPermissionDeniedError(error)) {
+        console.error(
+          `[api] ${method} /rest/v1/${table} is blocked by Row Level Security / permissions.`,
+          { payload: options.body, details: errorDetails(error) }
+        );
+        const base = toApiError(error);
+        throw new ApiError(
+          `Permissions are blocking ${method} on the "${table}" table: ${base.message}. ` +
+            'Add an INSERT/UPDATE/DELETE policy for the authenticated role (or grant the ' +
+            'privilege) in Supabase.',
+          base.status,
+          base.code
+        );
+      }
+
+      console.error(
+        `[api] ${method} /rest/v1/${table}${options.query ?? ''} failed.`,
+        { payload: options.body, details: errorDetails(error) }
+      );
       throw toApiError(error);
     }
   }
@@ -180,10 +219,21 @@ async function tableRequest<T>(
       `[api] No Supabase table found for "${group}". Tried: ${candidates.join(', ')}.`,
       errorDetails(lastError)
     );
-    return (options.method === 'GET' ? [] : undefined) as T;
+    return (method === 'GET' ? [] : undefined) as T;
   }
 
-  throw toApiError(lastError);
+  // Every candidate was missing or rejected the method (e.g. all of them are
+  // read-only views). Prefer the 405 detail so the real cause is reported.
+  const cause = toApiError(methodError ?? lastError);
+  throw new ApiError(
+    `${method} request failed for "${group}" (tried tables: ${candidates.join(', ')}): ` +
+      `${cause.message}. ` +
+      (methodError
+        ? 'The relation may be a read-only view — create the writable table in Supabase and make sure it grants INSERT/UPDATE/DELETE to the authenticated role.'
+        : 'Verify the table exists and accepts this operation.'),
+    cause.status,
+    cause.code
+  );
 }
 
 /**
@@ -246,6 +296,17 @@ async function insertOne<T>(group: TableGroup, payload: unknown): Promise<T> {
     prefer: 'return=representation'
   });
   const row = Array.isArray(rows) ? rows[0] : rows;
+  if (row === undefined || row === null) {
+    console.error(
+      `[api] Insert into "${group}" was accepted but returned no row.`,
+      { payload, response: rows }
+    );
+    throw new ApiError(
+      `Supabase accepted the insert into "${group}" but did not return the created row. ` +
+        'Verify the table schema matches the payload.',
+      0
+    );
+  }
   return fromRow<T>(row);
 }
 
@@ -261,6 +322,17 @@ async function patchOne<T>(
     prefer: 'return=representation'
   });
   const row = Array.isArray(rows) ? rows[0] : rows;
+  if (row === undefined || row === null) {
+    console.error(
+      `[api] Update on "${group}" (id=${id}) matched no row or returned no representation.`,
+      { payload, response: rows }
+    );
+    throw new ApiError(
+      `Could not update the record in "${group}" (id=${id}) — it may no longer exist, ` +
+        'or the table schema does not match the payload.',
+      404
+    );
+  }
   return fromRow<T>(row);
 }
 
