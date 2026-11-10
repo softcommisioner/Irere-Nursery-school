@@ -232,6 +232,21 @@ export function isMethodNotAllowedError(error: unknown): boolean {
 }
 
 /**
+ * PostgREST reports PGRST204 (or a schema-cache message) when a payload
+ * references a column that does not exist on the relation. Candidate tables
+ * legitimately have different schemas, so callers should try the next
+ * candidate instead of failing outright.
+ */
+export function isSchemaMismatchError(error: unknown): boolean {
+  if (!(error instanceof SupabaseError)) return false;
+  return (
+    error.code === 'PGRST204' ||
+    error.code === '42703' ||
+    /could not find the '.+' column|schema cache|column .* not found/i.test(error.message)
+  );
+}
+
+/**
  * Row Level Security policies or missing grants reject writes with 403 /
  * 42501 "permission denied". These point at a real table, so the fix belongs
  * in the database (policies or privileges), not in the request format.

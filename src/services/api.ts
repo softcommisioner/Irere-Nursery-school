@@ -17,6 +17,7 @@ import {
   isMethodNotAllowedError,
   isMissingTableError,
   isPermissionDeniedError,
+  isSchemaMismatchError,
   isSupabaseConfigured,
   supabaseConfigError,
   supabaseRest
@@ -148,15 +149,104 @@ interface TableRequestOptions {
   allowMissing?: boolean;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Live schema introspection (PostgREST OpenAPI root)                          */
+/* -------------------------------------------------------------------------- */
+
+interface OpenApiSpec {
+  paths?: Record<string, Record<string, unknown>>;
+  definitions?: Record<string, { properties?: Record<string, unknown> }>;
+}
+
+interface RestSchema {
+  /** Relation name -> methods PostgREST accepts (get/post/patch/delete). */
+  methods: Map<string, Set<string>>;
+  /** Relation name -> exact column names on that relation. */
+  columns: Map<string, Set<string>>;
+}
+
+let restSchemaPromise: Promise<RestSchema | null> | null = null;
+
+/**
+ * Loads the PostgREST OpenAPI description of the live database once per
+ * session. It reports the exact relations that exist and which methods each
+ * accepts — a read-only view (e.g. `users`/`profiles` over `auth.users`) only
+ * lists `get`, which is what produces "405 Method Not Allowed" on INSERT.
+ * Using this to filter write candidates means mutations are only attempted
+ * against relations that actually accept the method and its columns.
+ */
+async function loadRestSchema(): Promise<RestSchema | null> {
+  if (!restSchemaPromise) {
+    restSchemaPromise = (async () => {
+      try {
+        const spec = await supabaseRest<OpenApiSpec>('/', { method: 'GET' });
+        if (!spec || typeof spec !== 'object' || !spec.paths) return null;
+
+        const methods = new Map<string, Set<string>>();
+        const columns = new Map<string, Set<string>>();
+
+        Object.entries(spec.paths).forEach(([path, operations]) => {
+          const name = path.replace(/^\//, '');
+          if (!name || /[({]/.test(name)) return;
+          methods.set(name, new Set(Object.keys(operations ?? {})));
+        });
+
+        Object.entries(spec.definitions ?? {}).forEach(([name, definition]) => {
+          const properties = definition?.properties ?? {};
+          if (Object.keys(properties).length > 0) {
+            columns.set(name, new Set(Object.keys(properties)));
+          }
+        });
+
+        return { methods, columns };
+      } catch (error) {
+        console.error(
+          '[api] Could not load the Supabase REST schema — table/method verification is disabled for this session.',
+          errorDetails(error)
+        );
+        return null;
+      }
+    })();
+  }
+  return restSchemaPromise;
+}
+
+/** Top-level snake_case column names sent for a payload (object or batch). */
+function payloadColumnKeys(payload: unknown): string[] {
+  const row = Array.isArray(payload) ? payload[0] : payload;
+  if (!row || typeof row !== 'object') return [];
+  return Object.keys(row).map(camelToSnake);
+}
+
 async function tableRequest<T>(
   group: TableGroup,
   options: TableRequestOptions = {}
 ): Promise<T> {
   const method = options.method ?? 'GET';
+  const isWrite = method !== 'GET';
   const cached = resolvedTables.get(group);
-  const candidates = cached
+  let candidates = cached
     ? [cached, ...TABLE_CANDIDATES[group].filter((name) => name !== cached)]
     : [...TABLE_CANDIDATES[group]];
+
+  const schema = await loadRestSchema();
+
+  // Route writes only to relations the live database declares as writable.
+  // This is what stops INSERT/UPDATE/DELETE from ever hitting a read-only
+  // view (the source of the 405 Method Not Allowed errors).
+  if (isWrite && schema) {
+    const writable = candidates.filter((table) =>
+      schema.methods.get(table)?.has(method.toLowerCase())
+    );
+    const rejected = candidates.filter((table) => !writable.includes(table));
+    if (writable.length > 0 && rejected.length > 0) {
+      console.warn(
+        `[api] Skipping read-only relation(s) for ${method} on "${group}": ${rejected.join(', ')}. ` +
+          `Writable candidate(s): ${writable.join(', ')}.`
+      );
+      candidates = writable;
+    }
+  }
 
   let lastError: unknown = null;
   // First non-retryable-but-405 style failure (e.g. a read-only view) — thrown
@@ -164,6 +254,29 @@ async function tableRequest<T>(
   let methodError: unknown = null;
 
   for (const table of candidates) {
+    // Pre-flight column check: never send a payload whose columns do not
+    // exist on this candidate table (different candidates have different
+    // schemas) — log the exact mismatch instead of waiting for PostgREST.
+    if (isWrite && schema && options.body !== undefined) {
+      const columns = schema.columns.get(table);
+      const unknownColumns = payloadColumnKeys(options.body).filter(
+        (key) => !columns?.has(key)
+      );
+      if (columns && unknownColumns.length > 0) {
+        console.error(
+          `[api] Skipping ${method} /rest/v1/${table}: payload columns ` +
+            `[${unknownColumns.join(', ')}] do not exist on the table. ` +
+            `Available columns: ${[...columns].join(', ')}.`,
+          { payload: options.body }
+        );
+        lastError = new ApiError(
+          `Payload does not match the "${table}" table schema (unknown columns: ${unknownColumns.join(', ')}).`,
+          400
+        );
+        continue;
+      }
+    }
+
     try {
       const result = await supabaseRest<T>(`/${table}${options.query ?? ''}`, {
         method,
@@ -175,10 +288,15 @@ async function tableRequest<T>(
     } catch (error) {
       lastError = error;
 
-      // Missing table (404) or method-not-allowed (405, typically a
-      // read-only view) means this candidate cannot serve the request — log
-      // the exact table, method and payload, then try the next candidate.
-      if (isMissingTableError(error) || isMethodNotAllowedError(error)) {
+      // Missing table (404), method-not-allowed (405, typically a read-only
+      // view) or column/schema mismatch (PGRST204) means this candidate cannot
+      // serve the request — log the exact table, method and payload, then try
+      // the next candidate.
+      if (
+        isMissingTableError(error) ||
+        isMethodNotAllowedError(error) ||
+        isSchemaMismatchError(error)
+      ) {
         if (isMethodNotAllowedError(error) && methodError === null) {
           methodError = error;
         }
