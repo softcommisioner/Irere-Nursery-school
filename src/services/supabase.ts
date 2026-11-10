@@ -1,10 +1,11 @@
 /**
  * Supabase configuration & REST helpers.
  *
- * Vite only exposes variables prefixed with `VITE_` by default, but Vercel
- * projects often define `NEXT_PUBLIC_*` variables. `vite.config.ts` therefore
- * exposes both prefixes and maps the `NEXT_PUBLIC_*` values onto
- * `import.meta.env` so the same build works on either platform.
+ * The client reads its configuration directly from
+ * `import.meta.env.VITE_SUPABASE_URL` and `import.meta.env.VITE_SUPABASE_ANON_KEY`
+ * (statically inlined by Vite at build time). Vercel projects that define the
+ * Next.js-style `NEXT_PUBLIC_*` names still work because `vite.config.ts`
+ * exposes both prefixes through `envPrefix`.
  *
  * Required:
  *   VITE_SUPABASE_URL        (or NEXT_PUBLIC_SUPABASE_URL)
@@ -15,18 +16,13 @@
  * Never put the service-role/secret key in client code.
  */
 
-type EnvBag = Record<string, string | undefined>;
-
-function metaEnv(): EnvBag {
-  const env = (import.meta as ImportMeta & { env?: EnvBag }).env;
-  return env ?? {};
-}
-
-function processEnv(): EnvBag {
-  // `process` is injected by Vite's `define` for the NEXT_PUBLIC keys, and is
-  // undefined in the browser otherwise. Guard before touching it.
-  if (typeof process === 'undefined' || !process.env) return {};
-  return process.env as EnvBag;
+interface ClientEnv {
+  VITE_SUPABASE_URL?: string;
+  VITE_SUPABASE_ANON_KEY?: string;
+  VITE_SUPABASE_PUBLISHABLE_KEY?: string;
+  NEXT_PUBLIC_SUPABASE_URL?: string;
+  NEXT_PUBLIC_SUPABASE_ANON_KEY?: string;
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?: string;
 }
 
 function firstDefined(...values: (string | undefined)[]): string {
@@ -42,27 +38,20 @@ function normalizeUrl(url: string): string {
   return url.replace(/\/+$/, '').replace(/\/rest\/v1$/, '');
 }
 
-const meta = metaEnv();
-const node = processEnv();
+const env = (import.meta.env ?? {}) as ClientEnv;
 
 export const SUPABASE_URL = normalizeUrl(
   firstDefined(
-    meta.VITE_SUPABASE_URL,
-    meta.NEXT_PUBLIC_SUPABASE_URL,
-    node.NEXT_PUBLIC_SUPABASE_URL,
-    node.VITE_SUPABASE_URL
+    import.meta.env.VITE_SUPABASE_URL,
+    env.NEXT_PUBLIC_SUPABASE_URL
   )
 );
 
 export const SUPABASE_ANON_KEY = firstDefined(
-  meta.VITE_SUPABASE_ANON_KEY,
-  meta.VITE_SUPABASE_PUBLISHABLE_KEY,
-  meta.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-  meta.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
-  node.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-  node.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
-  node.VITE_SUPABASE_ANON_KEY,
-  node.VITE_SUPABASE_PUBLISHABLE_KEY
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+  env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 );
 
 export const SUPABASE_REST_URL = SUPABASE_URL ? `${SUPABASE_URL}/rest/v1` : '';
