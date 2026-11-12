@@ -5,7 +5,7 @@
 -- column names produced by the client (camelCase -> snake_case) so INSERT /
 -- UPDATE / DELETE payloads match without transformation errors.
 --
--- Tables: classes, students, staff, teacher_attendance, student_attendance,
+-- Tables: classes, students, staff, parents, teacher_attendance, student_attendance,
 --         payments, ledger, curriculum, evaluations, feedback, school_settings
 --
 -- All tables are REAL writable tables (never views). Every table has:
@@ -82,7 +82,7 @@ create index if not exists students_reg_number_idx on public.students (reg_numbe
 create index if not exists students_class_id_idx on public.students (class_id);
 
 -- ----------------------------------------------------------------------------
--- Staff (teachers / accountants - logins live in Supabase Auth, profiles here)
+-- Staff (teachers / accountants - profiles here, credentials on the device)
 -- ----------------------------------------------------------------------------
 create table if not exists public.staff (
   id          text primary key default gen_random_uuid()::text,
@@ -95,7 +95,35 @@ create table if not exists public.staff (
   created_at  timestamptz not null default now()
 );
 
+-- Phone is the primary login identifier. Email is optional, so remove the old
+-- NOT NULL / unique email requirement and allow multiple blank emails.
+alter table public.staff alter column email drop not null;
+alter table public.staff drop constraint if exists staff_email_key;
+drop index if exists public.staff_email_idx;
 create index if not exists staff_email_idx on public.staff (email);
+create unique index if not exists staff_email_unique_idx
+  on public.staff (lower(email)) where email is not null and email <> '';
+create unique index if not exists staff_phone_unique_idx
+  on public.staff (phone) where phone <> '';
+
+-- ----------------------------------------------------------------------------
+-- Parent accounts (linked to a pupil; credentials live on the parent device)
+-- ----------------------------------------------------------------------------
+create table if not exists public.parents (
+  id                  text primary key default gen_random_uuid()::text,
+  name                text not null,
+  phone               text not null,
+  email               text not null default '',
+  linked_student_reg  text not null default '',
+  linked_student_name text,
+  created_at          timestamptz not null default now()
+);
+
+create unique index if not exists parents_phone_unique_idx
+  on public.parents (phone) where phone <> '';
+create unique index if not exists parents_email_unique_idx
+  on public.parents (lower(email)) where email <> '';
+create index if not exists parents_student_idx on public.parents (linked_student_reg);
 
 -- ----------------------------------------------------------------------------
 -- Teacher attendance (daily self check-in + headmaster review)
@@ -270,6 +298,7 @@ declare
     'classes',
     'students',
     'staff',
+    'parents',
     'teacher_attendance',
     'student_attendance',
     'payments',
@@ -321,6 +350,6 @@ commit;
 -- select relname, relkind from pg_class c
 -- join pg_namespace n on n.oid = c.relnamespace
 -- where n.nspname = 'public' and relname in (
---   'classes','students','staff','teacher_attendance','student_attendance',
+--   'classes','students','staff','parents','teacher_attendance','student_attendance',
 --   'payments','ledger','curriculum','evaluations','feedback','school_settings'
 -- );

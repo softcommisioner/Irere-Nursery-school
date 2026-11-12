@@ -4,6 +4,8 @@ import { SCHOOL_INFO } from '../config/school';
 import {
   AuthSession,
   ROLE_LABELS,
+  isValidEmail,
+  isValidPhone,
   registerParent,
   signIn
 } from '../services/auth';
@@ -151,7 +153,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     resetFeedback();
 
     if (!email.trim() || !password) {
-      setError('Please enter both your email and password.');
+      setError('Please enter your phone number or email, plus your password.');
       return;
     }
 
@@ -178,8 +180,13 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
       return;
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parentEmail.trim())) {
-      setError('Please enter a valid email address.');
+    if (!isValidPhone(parentPhone)) {
+      setError('Enter a valid phone number (e.g. 0788733564).');
+      return;
+    }
+
+    if (parentEmail.trim() && !isValidEmail(parentEmail)) {
+      setError('Enter a valid email address or leave it blank.');
       return;
     }
 
@@ -199,13 +206,22 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     }
 
     const normalizedReg = childReg.trim().toUpperCase();
-    const matchedStudent = knownStudents.find(
-      (student) => student.regNumber.toUpperCase() === normalizedReg
-    );
+    const normalizedRegLookup = childReg.trim().toLowerCase();
+    const normalizedName = childName.trim().toLowerCase();
+    const matchedStudent = knownStudents.find((student) => {
+      const fullName = `${student.firstName} ${student.lastName}`.toLowerCase();
+      const reversedName = `${student.lastName} ${student.firstName}`.toLowerCase();
+      return (
+        student.regNumber.toLowerCase() === normalizedRegLookup ||
+        student.id.toLowerCase() === normalizedRegLookup ||
+        fullName === normalizedName ||
+        reversedName === normalizedName
+      );
+    });
 
     if (knownStudents.length > 0 && !matchedStudent) {
       setError(
-        'No pupil was found with that registration number. Please check the ID or contact the school office.'
+        'No pupil was found with that registration number or name. Please check the details or contact the school office.'
       );
       return;
     }
@@ -215,7 +231,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
       const result = await registerParent({
         name: parentName.trim(),
         email: parentEmail.trim(),
-        phone: parentPhone.trim() || undefined,
+        phone: parentPhone.trim(),
         password: parentPassword,
         linkedStudentReg: matchedStudent?.regNumber ?? normalizedReg,
         linkedStudentName:
@@ -341,8 +357,9 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                 <p className="text-xs font-bold">Staff credentials</p>
               </div>
               <p className="mt-1.5 text-[11px] leading-relaxed text-orange-800/80">
-                Staff sign in with the official work email and the password assigned by the
-                Headmaster. Contact the school office if you need your password reset.
+                Staff sign in with their phone number (or optional email) and the password
+                assigned by the Headmaster. Contact the school office if you need your password
+                reset.
               </p>
             </div>
           </section>
@@ -404,15 +421,15 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
 
                   {parentMode === 'LOGIN' ? (
                     <form onSubmit={handleLogin} className="space-y-4">
-                      <Field label="Email address">
+                      <Field label="Phone number or email">
                         <div className="relative">
-                          <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                          <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                           <input
-                            type="email"
-                            autoComplete="email"
+                            type="text"
+                            autoComplete="username"
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
-                            placeholder="you@example.com"
+                            placeholder="0788733564 or you@example.com"
                             className={`${inputCls} pl-9`}
                           />
                         </div>
@@ -492,7 +509,21 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                       </Field>
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <Field label="Email address">
+                        <Field label="Phone number">
+                          <div className="relative">
+                            <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                            <input
+                              type="tel"
+                              autoComplete="tel"
+                              required
+                              value={parentPhone}
+                              onChange={(e) => setParentPhone(e.target.value)}
+                              placeholder="0788733564"
+                              className={`${inputCls} pl-9`}
+                            />
+                          </div>
+                        </Field>
+                        <Field label="Email address (optional)">
                           <div className="relative">
                             <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                             <input
@@ -501,19 +532,6 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                               value={parentEmail}
                               onChange={(e) => setParentEmail(e.target.value)}
                               placeholder="you@example.com"
-                              className={`${inputCls} pl-9`}
-                            />
-                          </div>
-                        </Field>
-                        <Field label="Phone (optional)">
-                          <div className="relative">
-                            <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                            <input
-                              type="tel"
-                              autoComplete="tel"
-                              value={parentPhone}
-                              onChange={(e) => setParentPhone(e.target.value)}
-                              placeholder="+250 7xx xxx xxx"
                               className={`${inputCls} pl-9`}
                             />
                           </div>
@@ -569,7 +587,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                             />
                           </div>
                         </Field>
-                        <Field label="Child’s registration number / ID">
+                        <Field label="Child’s registration number / ID or full name">
                           <div className="relative">
                             <Hash className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                             <input

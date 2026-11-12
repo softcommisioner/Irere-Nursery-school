@@ -73,12 +73,12 @@ export const ParentPortal: React.FC<ParentPortalProps> = ({
     setLookupError(null);
     const reg = lookupReg.trim();
     if (!reg) {
-      setLookupError('Enter your child’s registration number / ID to continue.');
+      setLookupError('Enter your child’s registration number / ID or full name to continue.');
       return;
     }
     const found = onLookupStudent(reg);
     if (!found) {
-      setLookupError('No pupil was found with that registration number. Please check and try again.');
+      setLookupError('No pupil was found with that registration number or name. Please check and try again.');
       return;
     }
     setTab('PERFORMANCE');
@@ -156,8 +156,8 @@ export const ParentPortal: React.FC<ParentPortalProps> = ({
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex items-center gap-3">
           <UserX className="w-6 h-6 text-slate-400" />
           <p className="text-sm text-slate-500">
-            No pupil is linked yet. Enter your child’s registration number below to review their
-            performance.
+            No pupil is linked yet. Enter your child’s registration number / ID or full name below
+            to review their performance.
           </p>
         </div>
       )}
@@ -170,14 +170,14 @@ export const ParentPortal: React.FC<ParentPortalProps> = ({
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold text-slate-800">Review a pupil record</p>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              Enter the child’s Registration Number / ID to view their academic performance.
+              Enter the child’s Registration Number / ID or full name to view their academic performance.
             </p>
             <form onSubmit={handleLookup} className="mt-3 flex flex-col sm:flex-row gap-2">
               <input
                 value={lookupReg}
                 onChange={(e) => setLookupReg(e.target.value)}
-                placeholder="e.g. IRR-2026-001"
-                className={`${inputClass} font-mono uppercase sm:flex-1`}
+                placeholder="e.g. IRR-2026-001 or full name"
+                className={`${inputClass} font-mono sm:flex-1`}
               />
               <button
                 type="submit"

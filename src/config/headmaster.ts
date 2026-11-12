@@ -4,10 +4,8 @@ import { UserRole } from '../types';
  * Permanent Headmaster account.
  *
  * The school signs in with the headmaster phone number (`0788733564`) or the
- * derived work email. Supabase Auth requires an email address, so a bare phone
- * number is mapped to `<digits>@irerenursery.rw`. The same mapping is used by
- * `scripts/provision-headmaster.mjs`, which creates the real Supabase Auth user
- * with the service role key.
+ * derived work email. Authentication runs against the local credential store,
+ * so the email is just a convenience alias — it is not sent to Supabase Auth.
  *
  * Values can be overridden at build time through environment variables.
  */
@@ -22,7 +20,7 @@ const DEFAULT_EMAIL_DOMAIN = 'irerenursery.rw';
 export const SCHOOL_EMAIL_DOMAIN =
   (env.VITE_SCHOOL_EMAIL_DOMAIN as string | undefined)?.trim() || DEFAULT_EMAIL_DOMAIN;
 
-/** Converts a phone number into a Supabase-compatible email address. */
+/** Converts a phone number into a stable sign-in email alias. */
 export function toAuthEmail(identifier: string): string {
   const trimmed = identifier.trim().toLowerCase();
   if (/^\+?[\d\s()-]+$/.test(trimmed) && /\d/.test(trimmed)) {

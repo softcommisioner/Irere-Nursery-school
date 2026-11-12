@@ -119,7 +119,8 @@ type TableGroup = keyof typeof TABLE_CANDIDATES;
 const TABLE_CANDIDATES = {
   classes: ['classes', 'school_classes'],
   students: ['students'],
-  staff: ['staff', 'users', 'profiles'],
+  staff: ['staff', 'staff_accounts', 'users', 'profiles'],
+  parents: ['parents', 'parent_accounts'],
   teacherAttendance: [
     'teacher_attendance',
     'teacher_attendance_records',
@@ -616,8 +617,8 @@ export async function getStaff(): Promise<User[]> {
 
 export interface CreateStaffInput {
   name: string;
+  phone: string;
   email: string;
-  phone?: string;
   role: Extract<UserRole, 'ACCOUNTANT' | 'TEACHER'>;
   title: string;
   password: string;
@@ -625,25 +626,25 @@ export interface CreateStaffInput {
 
 export async function createStaff(input: CreateStaffInput): Promise<User> {
   // Never persist plain-text passwords in the database. Staff logins are
-  // handled by Supabase Auth / the local credential store.
+  // handled by the local credential store.
   const { password: _password, ...profile } = input;
   const created = await insertOne<User>('staff', profile);
   return {
     ...created,
     id: created.id ?? fallbackId('staff'),
+    email: created.email ?? input.email ?? '',
     phone: created.phone ?? input.phone ?? ''
   };
 }
 
-export type UpdateStaffInput = Omit<Pick<User, 'name' | 'email' | 'phone' | 'role' | 'title'>, 'phone'> & {
-  phone?: string;
-};
+export type UpdateStaffInput = Pick<User, 'name' | 'email' | 'phone' | 'role' | 'title'>;
 
 export async function updateStaff(id: string, input: UpdateStaffInput): Promise<User> {
   const updated = await patchOne<User>('staff', id, input);
   return {
     ...updated,
     id: updated.id ?? id,
+    email: updated.email ?? input.email ?? '',
     phone: updated.phone ?? input.phone ?? ''
   };
 }
@@ -653,6 +654,53 @@ export async function deleteStaff(id: string): Promise<void> {
     method: 'DELETE',
     query: `?id=eq.${encodeURIComponent(id)}`
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Parent accounts                                                            */
+/* -------------------------------------------------------------------------- */
+
+export interface ParentProfile {
+  id: string;
+  name: string;
+  phone: string;
+  email: string;
+  linkedStudentReg: string;
+  linkedStudentName?: string;
+  createdAt?: string;
+}
+
+export interface CreateParentProfileInput {
+  name: string;
+  phone: string;
+  email?: string;
+  linkedStudentReg: string;
+  linkedStudentName?: string;
+}
+
+export async function getParents(): Promise<ParentProfile[]> {
+  return readList<ParentProfile>('parents');
+}
+
+export async function createParentProfile(
+  input: CreateParentProfileInput
+): Promise<ParentProfile> {
+  const created = await insertOne<ParentProfile>('parents', {
+    name: input.name.trim(),
+    phone: input.phone.trim(),
+    email: input.email?.trim() || '',
+    linkedStudentReg: input.linkedStudentReg.trim().toUpperCase(),
+    linkedStudentName: input.linkedStudentName?.trim() || undefined
+  });
+  return {
+    ...created,
+    id: created.id ?? fallbackId('parent'),
+    name: created.name ?? input.name,
+    phone: created.phone ?? input.phone,
+    email: created.email ?? input.email ?? '',
+    linkedStudentReg: created.linkedStudentReg ?? input.linkedStudentReg,
+    linkedStudentName: created.linkedStudentName ?? input.linkedStudentName
+  };
 }
 
 /* -------------------------------------------------------------------------- */

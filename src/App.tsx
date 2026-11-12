@@ -60,6 +60,7 @@ export default function App() {
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
   const [staff, setStaff] = useState<User[]>([]);
+  const [parents, setParents] = useState<api.ParentProfile[]>([]);
   const [teacherAttendance, setTeacherAttendance] = useState<TeacherAttendanceRecord[]>([]);
   const [studentAttendance, setStudentAttendance] = useState<StudentAttendanceRecord[]>([]);
   const [payments, setPayments] = useState<FeePayment[]>([]);
@@ -80,6 +81,7 @@ export default function App() {
         classList,
         studentList,
         staffList,
+        parentList,
         teacherAtt,
         studentAtt,
         paymentList,
@@ -92,6 +94,7 @@ export default function App() {
         api.getClasses(),
         api.getStudents(),
         api.getStaff(),
+        api.getParents(),
         api.getTeacherAttendance(),
         api.getStudentAttendance(),
         api.getFeePayments(),
@@ -104,6 +107,7 @@ export default function App() {
       setClasses(classList);
       setStudents(studentList);
       setStaff(staffList);
+      setParents(parentList);
       setTeacherAttendance(teacherAtt);
       setStudentAttendance(studentAtt);
       setPayments(paymentList);
@@ -196,15 +200,25 @@ export default function App() {
   };
 
   const handleLookupStudent = (registrationNumber: string): boolean => {
-    const normalized = registrationNumber.trim().toLowerCase();
-    const match = students.find(
-      (student) => student.regNumber.toLowerCase() === normalized
-    );
+    const query = registrationNumber.trim().toLowerCase();
+    const match = students.find((student) => {
+      const fullName = `${student.firstName} ${student.lastName}`.toLowerCase();
+      const reversedName = `${student.lastName} ${student.firstName}`.toLowerCase();
+      return (
+        student.regNumber.toLowerCase() === query ||
+        student.id.toLowerCase() === query ||
+        fullName === query ||
+        reversedName === query
+      );
+    });
     if (!match) return false;
 
     setParentLookupReg(match.regNumber);
     if (activeUser) {
-      const updated = auth.updateLinkedStudent(activeUser.email, match.regNumber);
+      const updated = auth.updateLinkedStudent(
+        activeUser.phone || activeUser.email,
+        match.regNumber
+      );
       if (updated) setActiveUser(updated);
     }
     return true;
@@ -414,9 +428,12 @@ export default function App() {
   const handleCreateStaff = async (input: api.CreateStaffInput): Promise<User> => {
     setActionError(null);
     try {
-      // Create the login first so we never end up with a staff record that
-      // cannot sign in.
+      const created = await api.createStaff(input);
+
+      // Create the credential only after the profile exists, so the local
+      // account id always matches the database record.
       const provisioned = await auth.provisionStaffAuth({
+        id: created.id,
         name: input.name,
         email: input.email,
         password: input.password,
@@ -425,10 +442,12 @@ export default function App() {
         phone: input.phone
       });
       if (!provisioned.ok) {
+        await api.deleteStaff(created.id).catch((rollbackError) => {
+          console.error('[staff] Could not roll back the profile after auth failure:', rollbackError);
+        });
         throw new Error(provisioned.error);
       }
 
-      const created = await api.createStaff(input);
       setStaff((prev) => [...prev, created]);
       return created;
     } catch (err) {
@@ -446,6 +465,21 @@ export default function App() {
       const error = new Error(result.error);
       setActionError(result.error);
       throw error;
+    }
+
+    if (result.session) {
+      const session = result.session;
+      setParents((prev) => [
+        ...prev,
+        {
+          id: session.id,
+          name: session.name,
+          phone: session.phone,
+          email: session.email,
+          linkedStudentReg: session.linkedStudentReg ?? input.linkedStudentReg,
+          linkedStudentName: input.linkedStudentName
+        }
+      ]);
     }
   };
 
@@ -514,7 +548,17 @@ export default function App() {
   ): Promise<void> => {
     setActionError(null);
     try {
+      const credentialError = auth.staffAccountUpdateError(id, input);
+      if (credentialError) throw new Error(credentialError);
+
       const updated = await api.updateStaff(id, input);
+      auth.updateStaffAccount(id, {
+        name: updated.name,
+        phone: updated.phone,
+        email: updated.email,
+        role: updated.role,
+        title: updated.title
+      });
       setStaff((prev) => prev.map((member) => (member.id === id ? { ...member, ...updated } : member)));
     } catch (err) {
       setActionError(failMessage(err, 'Could not update the staff account.'));
@@ -526,6 +570,7 @@ export default function App() {
     setActionError(null);
     try {
       await api.deleteStaff(id);
+      auth.deleteStaffAccount(id);
       setStaff((prev) => prev.filter((member) => member.id !== id));
     } catch (err) {
       setActionError(failMessage(err, 'Could not delete the staff account.'));
@@ -725,6 +770,7 @@ export default function App() {
             classes={classes}
             students={students}
             staff={staff}
+            parents={parents}
             teacherAttendance={teacherAttendance}
             payments={payments}
             ledger={ledger}

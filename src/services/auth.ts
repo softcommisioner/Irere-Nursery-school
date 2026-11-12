@@ -1,23 +1,14 @@
 import { UserRole } from '../types';
-import { HEADMASTER_ACCOUNT, toAuthEmail } from '../config/headmaster';
-import {
-  SUPABASE_ANON_KEY,
-  SUPABASE_AUTH_URL,
-  isSupabaseConfigured,
-  setSupabaseAccessToken
-} from './supabase';
+import { HEADMASTER_ACCOUNT } from '../config/headmaster';
+import { createParentProfile } from './api';
 
 /**
- * Authentication store.
+ * Local credential store.
  *
- * When Supabase is configured (`VITE_SUPABASE_URL` + anon key), sign-in and
- * account registration are handled by Supabase Auth. If the project is not
- * configured (or the auth endpoint is unreachable), the service falls back to a
- * local credential store that contains only the permanent Headmaster account.
- *
- * Demo staff accounts have been removed. Real staff, teacher and parent logins
- * are created by the Headmaster through the portal (or by the provisioning
- * script) and stored in Supabase Auth.
+ * Accounts are keyed by phone number (primary) with an optional email address.
+ * Passwords never leave this device and are stored as SHA-256 hashes where the
+ * browser supports Web Crypto. Staff and parent profile records are persisted
+ * separately in Supabase (`staff` and `parents`).
  */
 
 const ACCOUNTS_KEY = 'irere.auth.accounts.v1';
@@ -27,6 +18,7 @@ export interface AuthSession {
   id: string;
   name: string;
   email: string;
+  phone: string;
   role: UserRole;
   title: string;
   linkedStudentReg?: string;
@@ -34,7 +26,6 @@ export interface AuthSession {
 
 export interface AuthAccount extends AuthSession {
   password: string;
-  phone?: string;
   linkedStudentName?: string;
   createdAt: string;
 }
@@ -67,6 +58,37 @@ const LEGACY_DEMO_EMAILS = new Set([
   'sponsor@irerenursery.rw'
 ]);
 
+function canUseStorage(): boolean {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+}
+
+function normalizeEmail(email: string | undefined): string {
+  return (email ?? '').trim().toLowerCase();
+}
+
+/**
+ * Converts Rwandan phone formats to one canonical value:
+ * `0788733564`, `+250 788 733 564` and `250788733564` all become `0788733564`.
+ */
+export function normalizePhone(phone: string | undefined): string {
+  const digits = (phone ?? '').replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('250')) {
+    return `0${digits.slice(3)}`;
+  }
+  if (digits.length === 9 && digits.startsWith('7')) {
+    return `0${digits}`;
+  }
+  return digits;
+}
+
+export function isValidPhone(phone: string | undefined): boolean {
+  return /^0\d{9}$/.test(normalizePhone(phone));
+}
+
+export function isValidEmail(email: string | undefined): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
+}
+
 function isLegacyDemoAccount(account: AuthAccount): boolean {
   return (
     LEGACY_DEMO_IDS.has(account.id) ||
@@ -74,8 +96,12 @@ function isLegacyDemoAccount(account: AuthAccount): boolean {
   );
 }
 
-function canUseStorage(): boolean {
-  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+function accountKey(account: Pick<AuthAccount, 'id' | 'phone' | 'email'>): string {
+  const phone = normalizePhone(account.phone);
+  if (phone) return `phone:${phone}`;
+  const email = normalizeEmail(account.email);
+  if (email) return `email:${email}`;
+  return `id:${account.id}`;
 }
 
 function readStoredAccounts(): AuthAccount[] {
@@ -102,37 +128,62 @@ function writeStoredAccounts(accounts: AuthAccount[]): void {
 }
 
 /**
- * All accounts. Stored accounts are merged first so the permanent Headmaster
+ * All accounts. Built-in accounts are merged last so the permanent Headmaster
  * account always wins and its credentials can never be shadowed by old data.
  */
 export function getAccounts(): AuthAccount[] {
   const stored = readStoredAccounts();
   const merged = new Map<string, AuthAccount>();
-  stored.forEach((account) => merged.set(normalizeEmail(account.email), account));
-  BUILT_IN_ACCOUNTS.forEach((account) =>
-    merged.set(normalizeEmail(account.email), account)
-  );
+  stored.forEach((account) => merged.set(accountKey(account), account));
+  BUILT_IN_ACCOUNTS.forEach((account) => merged.set(accountKey(account), account));
   return Array.from(merged.values());
 }
 
-function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
-}
-
-/** Accepts either an email address or a phone number as the login identifier. */
-export function normalizeIdentifier(identifier: string): string {
-  return normalizeEmail(toAuthEmail(identifier));
-}
-
 function toSession(account: AuthAccount): AuthSession {
-  const { password: _password, phone: _phone, linkedStudentName: _child, ...session } = account;
+  const { password: _password, linkedStudentName: _child, ...session } = account;
   return session;
+}
+
+function findAccount(identifier: string): AuthAccount | undefined {
+  const value = identifier.trim();
+  if (!value) return undefined;
+
+  if (value.includes('@')) {
+    const email = normalizeEmail(value);
+    return getAccounts().find((account) => normalizeEmail(account.email) === email);
+  }
+
+  const phone = normalizePhone(value);
+  if (phone) {
+    const byPhone = getAccounts().find(
+      (account) => normalizePhone(account.phone) === phone
+    );
+    if (byPhone) return byPhone;
+  }
+
+  const email = normalizeEmail(value);
+  return email
+    ? getAccounts().find((account) => normalizeEmail(account.email) === email)
+    : undefined;
+}
+
+function findDuplicate(
+  phone: string,
+  email: string,
+  ignoreId?: string
+): AuthAccount | undefined {
+  return getAccounts().find(
+    (account) =>
+      account.id !== ignoreId &&
+      ((phone !== '' && normalizePhone(account.phone) === phone) ||
+        (email !== '' && normalizeEmail(account.email) === email))
+  );
 }
 
 function saveAccount(account: AuthAccount): void {
   const stored = readStoredAccounts();
   const index = stored.findIndex(
-    (item) => normalizeEmail(item.email) === normalizeEmail(account.email)
+    (item) => item.id === account.id || accountKey(item) === accountKey(account)
   );
   if (index >= 0) {
     stored[index] = account;
@@ -140,6 +191,27 @@ function saveAccount(account: AuthAccount): void {
     stored.push(account);
   }
   writeStoredAccounts(stored);
+}
+
+function removeAccount(id: string): void {
+  writeStoredAccounts(readStoredAccounts().filter((account) => account.id !== id));
+}
+
+async function hashPassword(password: string): Promise<string> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) return password;
+  const bytes = new TextEncoder().encode(password);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  const hash = Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+  return `sha256:${hash}`;
+}
+
+async function passwordMatches(account: AuthAccount, password: string): Promise<boolean> {
+  if (!account.password.startsWith('sha256:')) {
+    return account.password === password;
+  }
+  return account.password === (await hashPassword(password));
 }
 
 export function saveSession(session: AuthSession): void {
@@ -164,6 +236,9 @@ export function loadSession(): AuthSession | null {
       window.localStorage.removeItem(SESSION_KEY);
       return null;
     }
+    if (typeof parsed.phone !== 'string') {
+      parsed.phone = '';
+    }
     return parsed;
   } catch {
     return null;
@@ -171,7 +246,6 @@ export function loadSession(): AuthSession | null {
 }
 
 export function clearSession(): void {
-  setSupabaseAccessToken(null);
   if (!canUseStorage()) return;
   try {
     window.localStorage.removeItem(SESSION_KEY);
@@ -182,273 +256,15 @@ export function clearSession(): void {
 
 export type AuthResult = { ok: true; session: AuthSession } | { ok: false; error: string };
 
-/* -------------------------------------------------------------------------- */
-/* Supabase Auth (GoTrue REST)                                                 */
-/* -------------------------------------------------------------------------- */
-
-interface SupabaseAuthUser {
-  id: string;
-  email?: string;
-  user_metadata?: Record<string, unknown>;
-  app_metadata?: Record<string, unknown>;
-}
-
-interface SupabaseAuthResponse {
-  access_token?: string;
-  refresh_token?: string;
-  user?: SupabaseAuthUser;
-  msg?: string;
-  message?: string;
-  error?: string;
-  error_description?: string;
-  code?: string;
-}
-
-class SupabaseAuthError extends Error {
-  status: number;
-  code?: string;
-
-  constructor(message: string, status: number, code?: string) {
-    super(message);
-    this.name = 'SupabaseAuthError';
-    this.status = status;
-    this.code = code;
-  }
-}
-
-async function authRequest<T>(path: string, body: unknown): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(`${SUPABASE_AUTH_URL}${path}`, {
-      method: 'POST',
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-  } catch {
-    throw new SupabaseAuthError('Unable to reach Supabase Auth.', 0);
-  }
-
-  const raw = await response.text();
-  let parsed: SupabaseAuthResponse & Record<string, unknown> = {};
-  if (raw.trim() !== '') {
-    try {
-      parsed = JSON.parse(raw) as SupabaseAuthResponse & Record<string, unknown>;
-    } catch {
-      parsed = {};
-    }
-  }
-
-  if (!response.ok) {
-    throw new SupabaseAuthError(
-      parsed.msg ??
-        parsed.error_description ??
-        parsed.message ??
-        parsed.error ??
-        `Authentication failed with status ${response.status}.`,
-      response.status,
-      parsed.code
-    );
-  }
-
-  return parsed as T;
-}
-
-function normalizeRole(value: unknown): UserRole | null {
-  if (typeof value !== 'string') return null;
-  const normalized = value.trim().toUpperCase().replace(/[\s-]+/g, '_');
-  switch (normalized) {
-    case 'HEADMASTER':
-    case 'HEAD_MASTER':
-    case 'HEAD_TEACHER':
-    case 'PRINCIPAL':
-    case 'ADMIN':
-    case 'SUPER_ADMIN':
-      return 'HEADMASTER';
-    case 'ACCOUNTANT':
-    case 'BURSAR':
-    case 'FINANCE':
-      return 'ACCOUNTANT';
-    case 'TEACHER':
-    case 'INSTRUCTOR':
-      return 'TEACHER';
-    case 'PARENT':
-    case 'GUARDIAN':
-      return 'PARENT';
-    case 'SPONSOR':
-    case 'DONOR':
-      return 'SPONSOR';
-    default:
-      return null;
-  }
-}
-
-function roleFromUser(user: SupabaseAuthUser): UserRole | null {
-  return (
-    normalizeRole(user.app_metadata?.role) ??
-    normalizeRole(user.user_metadata?.role) ??
-    normalizeRole(user.user_metadata?.user_role)
-  );
-}
-
-function nameFromUser(user: SupabaseAuthUser, fallbackEmail: string): string {
-  const metadata = user.user_metadata ?? {};
-  const candidates = [metadata.full_name, metadata.name, metadata.display_name, metadata.fullName];
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim() !== '') {
-      return candidate.trim();
-    }
-  }
-  return fallbackEmail.split('@')[0];
-}
-
-function linkedStudentFromUser(user: SupabaseAuthUser): string | undefined {
-  const metadata = user.user_metadata ?? {};
-  const value = metadata.linked_student_reg ?? metadata.linkedStudentReg;
-  return typeof value === 'string' && value.trim() !== ''
-    ? value.trim().toUpperCase()
-    : undefined;
-}
-
-function sessionFromSupabase(
-  user: SupabaseAuthUser,
-  role: UserRole,
-  email: string
-): AuthSession {
-  return {
-    id: user.id,
-    name: nameFromUser(user, email),
-    email: normalizeEmail(user.email ?? email),
-    role,
-    title: ROLE_LABELS[role],
-    linkedStudentReg: linkedStudentFromUser(user)
-  };
-}
-
-function isInvalidCredentials(error: unknown): boolean {
-  return (
-    error instanceof SupabaseAuthError &&
-    (error.status === 400 || error.status === 401 || error.status === 403)
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* Public API                                                                  */
-/* -------------------------------------------------------------------------- */
-
-async function signInViaSupabase(
-  email: string,
-  password: string,
-  role: UserRole
-): Promise<AuthResult> {
-  const data = await authRequest<SupabaseAuthResponse>('/token?grant_type=password', {
-    email,
-    password
-  });
-
-  if (!data.access_token || !data.user) {
-    return {
-      ok: false,
-      error: 'Supabase did not return a session. Confirm your email and try again.'
-    };
-  }
-
-  const metadataRole = roleFromUser(data.user);
-  if (metadataRole && metadataRole !== role) {
-    return {
-      ok: false,
-      error: `These credentials are registered for the ${ROLE_LABELS[metadataRole]} portal. Please choose the correct portal.`
-    };
-  }
-
-  const session = sessionFromSupabase(data.user, role, email);
-  setSupabaseAccessToken(data.access_token);
-  saveSession(session);
-  return { ok: true, session };
-}
-
-/**
- * Creates the permanent Headmaster account on first use when Supabase is
- * configured but the account has not been provisioned yet. Running
- * `npm run db:provision:headmaster` is still the recommended path because it
- * uses the service role and can confirm the email immediately.
- */
-async function ensureHeadmasterAuth(): Promise<boolean> {
-  try {
-    await authRequest<SupabaseAuthResponse>('/signup', {
-      email: HEADMASTER_ACCOUNT.email,
-      password: HEADMASTER_ACCOUNT.password,
-      data: {
-        role: HEADMASTER_ACCOUNT.role,
-        full_name: HEADMASTER_ACCOUNT.name,
-        phone: HEADMASTER_ACCOUNT.phone,
-        title: HEADMASTER_ACCOUNT.title
-      }
-    });
-    return true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : '';
-    if (/already|registered|exists|duplicate/i.test(message)) {
-      return true;
-    }
-    console.warn('[auth] Could not provision the Headmaster account automatically.', error);
-    return false;
-  }
-}
-
 export async function signIn(
   identifier: string,
   password: string,
   role: UserRole
 ): Promise<AuthResult> {
-  const normalized = normalizeIdentifier(identifier);
+  const account = findAccount(identifier);
 
-  if (isSupabaseConfigured()) {
-    try {
-      return await signInViaSupabase(normalized, password, role);
-    } catch (error) {
-      const isHeadmasterLogin =
-        normalized === normalizeEmail(HEADMASTER_ACCOUNT.email) &&
-        password === HEADMASTER_ACCOUNT.password;
-
-      if (isHeadmasterLogin && isInvalidCredentials(error)) {
-        const provisioned = await ensureHeadmasterAuth();
-        if (provisioned) {
-          try {
-            return await signInViaSupabase(normalized, password, role);
-          } catch (retryError) {
-            console.warn(
-              '[auth] Headmaster account exists but is not ready for sign-in yet.',
-              retryError
-            );
-          }
-        }
-      }
-
-      // The local store always contains the permanent Headmaster account, so
-      // the school can still sign in before Supabase Auth is provisioned.
-      const local = signInLocal(normalized, password, role);
-      if (local.ok) return local;
-      if (isInvalidCredentials(error)) {
-        return { ok: false, error: 'Incorrect email/phone or password. Please try again.' };
-      }
-      console.warn('[auth] Supabase sign-in unavailable; using local credentials.', error);
-      return local;
-    }
-  }
-
-  return signInLocal(normalized, password, role);
-}
-
-function signInLocal(email: string, password: string, role: UserRole): AuthResult {
-  const account = getAccounts().find(
-    (item) => normalizeEmail(item.email) === normalizeEmail(email)
-  );
-
-  if (!account || account.password !== password) {
-    return { ok: false, error: 'Incorrect email/phone or password. Please try again.' };
+  if (!account || !(await passwordMatches(account, password))) {
+    return { ok: false, error: 'Incorrect phone/email or password. Please try again.' };
   }
 
   if (account.role !== role) {
@@ -458,6 +274,11 @@ function signInLocal(email: string, password: string, role: UserRole): AuthResul
     };
   }
 
+  // Upgrade old plain-text local passwords silently after a successful login.
+  if (!account.password.startsWith('sha256:')) {
+    saveAccount({ ...account, password: await hashPassword(password) });
+  }
+
   const session = toSession(account);
   saveSession(session);
   return { ok: true, session };
@@ -465,102 +286,80 @@ function signInLocal(email: string, password: string, role: UserRole): AuthResul
 
 export interface ParentRegistrationInput {
   name: string;
-  email: string;
+  phone: string;
+  email?: string;
   password: string;
-  phone?: string;
   linkedStudentReg: string;
   linkedStudentName?: string;
 }
 
 export type AccountProvisionResult =
-  | {
-      ok: true;
-      session?: AuthSession;
-      accessToken?: string;
-      requiresEmailConfirmation?: boolean;
-    }
+  | { ok: true; session?: AuthSession }
   | { ok: false; error: string };
 
+function duplicateAccountError(duplicate: AuthAccount): string {
+  return `An account already exists for ${duplicate.phone || duplicate.email}. Please log in instead.`;
+}
+
+function parentPersistenceError(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  if (/parents/i.test(message)) {
+    return `${message} Run \`npm run db:apply-schema\` to create the parents table, then try again.`;
+  }
+  return message || 'Could not save the parent account.';
+}
+
 /**
- * Creates a real parent account in Supabase Auth (or the local store when
- * Supabase is not configured) without changing the active session. This is used
- * by the Headmaster portal so registering a parent does not log the Headmaster
- * out.
+ * Creates a parent profile in the database and a matching local credential.
+ * Used both by self-service registration and by the Headmaster portal.
  */
 export async function provisionParentAccount(
   input: ParentRegistrationInput
 ): Promise<AccountProvisionResult> {
+  const phone = normalizePhone(input.phone);
   const email = normalizeEmail(input.email);
 
-  if (isSupabaseConfigured()) {
-    try {
-      const data = await authRequest<SupabaseAuthResponse>('/signup', {
-        email,
-        password: input.password,
-        data: {
-          role: 'PARENT',
-          full_name: input.name.trim(),
-          phone: input.phone ?? null,
-          linked_student_reg: input.linkedStudentReg.trim().toUpperCase(),
-          linked_student_name: input.linkedStudentName ?? null
-        }
-      });
-
-      if (data.user) {
-        const session = sessionFromSupabase(data.user, 'PARENT', email);
-        return {
-          ok: true,
-          session,
-          accessToken: data.access_token,
-          requiresEmailConfirmation: !data.access_token
-        };
-      }
-
-      return { ok: true, requiresEmailConfirmation: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '';
-      const isDuplicate =
-        error instanceof SupabaseAuthError &&
-        error.status >= 400 &&
-        error.status < 500 &&
-        /already|registered|exists|duplicate/i.test(message);
-
-      if (isDuplicate) {
-        return { ok: false, error: message };
-      }
-
-      console.warn('[auth] Supabase parent registration failed.', error);
-      return {
-        ok: false,
-        error: message || 'Could not create the parent account in Supabase.'
-      };
-    }
+  if (!isValidPhone(phone)) {
+    return { ok: false, error: 'Enter a valid phone number (e.g. 0788733564).' };
+  }
+  if (email && !isValidEmail(email)) {
+    return { ok: false, error: 'Enter a valid email address or leave it blank.' };
+  }
+  if (!input.linkedStudentReg.trim()) {
+    return { ok: false, error: 'Enter the child registration number / ID.' };
   }
 
-  return provisionParentLocal(input);
-}
+  const duplicate = findDuplicate(phone, email);
+  if (duplicate) {
+    return { ok: false, error: duplicateAccountError(duplicate) };
+  }
 
-function provisionParentLocal(input: ParentRegistrationInput): AccountProvisionResult {
-  const email = normalizeEmail(input.email);
-
-  if (getAccounts().some((account) => normalizeEmail(account.email) === email)) {
-    return {
-      ok: false,
-      error: 'An account already exists with this email. Please log in instead.'
-    };
+  let profile;
+  try {
+    profile = await createParentProfile({
+      name: input.name.trim(),
+      phone,
+      email,
+      linkedStudentReg: input.linkedStudentReg.trim().toUpperCase(),
+      linkedStudentName: input.linkedStudentName?.trim() || undefined
+    });
+  } catch (error) {
+    console.error('[auth] Could not save the parent profile in Supabase.', error);
+    return { ok: false, error: parentPersistenceError(error) };
   }
 
   const account: AuthAccount = {
-    id: `parent-${Date.now()}`,
+    id: profile.id,
     name: input.name.trim(),
     email,
-    password: input.password,
+    phone,
+    password: await hashPassword(input.password),
     role: 'PARENT',
     title: 'Parent / Guardian',
-    phone: input.phone?.trim() || undefined,
-    linkedStudentReg: input.linkedStudentReg.trim().toUpperCase(),
-    linkedStudentName: input.linkedStudentName?.trim() || undefined,
-    createdAt: new Date().toISOString()
+    linkedStudentReg: profile.linkedStudentReg || input.linkedStudentReg.trim().toUpperCase(),
+    linkedStudentName:
+      profile.linkedStudentName || input.linkedStudentName?.trim() || undefined,
+    createdAt: profile.createdAt ?? new Date().toISOString()
   };
 
   saveAccount(account);
@@ -573,110 +372,127 @@ export async function registerParent(
 ): Promise<AuthResult> {
   const result = await provisionParentAccount(input);
   if (!result.ok) return result;
-
   if (!result.session) {
-    return {
-      ok: false,
-      error:
-        'Account created. Check your email inbox to confirm it, then return here to log in.'
-    };
+    return { ok: false, error: 'The parent account was created but no session was returned.' };
   }
 
-  if (result.accessToken) setSupabaseAccessToken(result.accessToken);
   saveSession(result.session);
   return { ok: true, session: result.session };
 }
 
-export interface StaffAccountInput {
-  id: string;
-  name: string;
-  email: string;
-  password: string;
-  role: UserRole;
-  title: string;
-  phone?: string;
-}
-
-export function registerStaffAccount(input: StaffAccountInput): void {
-  const email = normalizeEmail(input.email);
-  const existing = readStoredAccounts().find(
-    (account) => normalizeEmail(account.email) === email
-  );
-
-  saveAccount({
-    id: existing?.id ?? input.id,
-    name: input.name,
-    email,
-    password: input.password,
-    role: input.role,
-    title: input.title,
-    phone: input.phone,
-    linkedStudentReg: existing?.linkedStudentReg,
-    linkedStudentName: existing?.linkedStudentName,
-    createdAt: existing?.createdAt ?? new Date().toISOString()
-  });
-}
-
 /**
- * Creates a real Supabase Auth account for a new staff member without
- * disturbing the currently signed-in Headmaster session (the returned token is
- * intentionally ignored). Errors are returned so the portal can avoid creating
- * a staff record that cannot log in.
+ * Creates the local staff credential. The staff profile must already have been
+ * inserted in Supabase so the local `id` matches the database record.
  */
 export async function provisionStaffAuth(input: {
+  id: string;
   name: string;
-  email: string;
+  phone: string;
+  email?: string;
   password: string;
   role: UserRole;
   title: string;
-  phone?: string;
 }): Promise<AccountProvisionResult> {
+  const phone = normalizePhone(input.phone);
   const email = normalizeEmail(input.email);
 
-  if (isSupabaseConfigured()) {
-    try {
-      const data = await authRequest<SupabaseAuthResponse>('/signup', {
-        email,
-        password: input.password,
-        data: {
-          role: input.role,
-          full_name: input.name,
-          phone: input.phone ?? null,
-          title: input.title
-        }
-      });
-
-      return {
-        ok: true,
-        accessToken: data.access_token,
-        requiresEmailConfirmation: !data.access_token
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '';
-      console.warn('[auth] Could not provision Supabase staff account.', error);
-      return {
-        ok: false,
-        error: message || 'Could not create the staff login in Supabase.'
-      };
-    }
+  if (!isValidPhone(phone)) {
+    return { ok: false, error: 'Enter a valid phone number (e.g. 0788733564).' };
   }
+  if (email && !isValidEmail(email)) {
+    return { ok: false, error: 'Enter a valid email address or leave it blank.' };
+  }
+
+  const duplicate = findDuplicate(phone, email, input.id);
+  if (duplicate) {
+    return { ok: false, error: duplicateAccountError(duplicate) };
+  }
+
+  saveAccount({
+    id: input.id,
+    name: input.name.trim(),
+    email,
+    phone,
+    password: await hashPassword(input.password),
+    role: input.role,
+    title: input.title,
+    createdAt: new Date().toISOString()
+  });
 
   return { ok: true };
 }
 
+/** Keeps the local credential in sync when the staff profile is edited. */
+export function staffAccountUpdateError(
+  id: string,
+  input: { phone: string; email: string }
+): string | null {
+  const existing = readStoredAccounts().find((account) => account.id === id);
+  if (!existing) return null;
+
+  const phone = normalizePhone(input.phone);
+  const email = normalizeEmail(input.email);
+  if (!isValidPhone(phone)) {
+    return 'Enter a valid phone number (e.g. 0788733564).';
+  }
+  if (email && !isValidEmail(email)) {
+    return 'Enter a valid email address or leave it blank.';
+  }
+  const duplicate = findDuplicate(phone, email, id);
+  return duplicate ? duplicateAccountError(duplicate) : null;
+}
+
+export function updateStaffAccount(
+  id: string,
+  input: {
+    name: string;
+    phone: string;
+    email: string;
+    role: UserRole;
+    title: string;
+  }
+): void {
+  const existing = readStoredAccounts().find((account) => account.id === id);
+  if (!existing) return;
+
+  const problem = staffAccountUpdateError(id, input);
+  if (problem) throw new Error(problem);
+
+  const updated: AuthAccount = {
+    ...existing,
+    name: input.name.trim(),
+    phone: normalizePhone(input.phone),
+    email: normalizeEmail(input.email),
+    role: input.role,
+    title: input.title
+  };
+  saveAccount(updated);
+
+  const session = loadSession();
+  if (session?.id === id) saveSession(toSession(updated));
+}
+
+export function deleteStaffAccount(id: string): void {
+  removeAccount(id);
+  if (loadSession()?.id === id) clearSession();
+}
+
 /** Persists a looked-up pupil on the parent's account and active session. */
-export function updateLinkedStudent(email: string, regNumber: string): AuthSession | null {
+export function updateLinkedStudent(identifier: string, regNumber: string): AuthSession | null {
   const normalized = regNumber.trim().toUpperCase();
-  const account = getAccounts().find(
-    (item) => normalizeEmail(item.email) === normalizeEmail(email)
-  );
+  const account = findAccount(identifier);
 
   if (account) {
     saveAccount({ ...account, linkedStudentReg: normalized });
   }
 
   const session = loadSession();
-  if (session && normalizeEmail(session.email) === normalizeEmail(email)) {
+  if (
+    session &&
+    (session.id === account?.id ||
+      normalizePhone(session.phone) === normalizePhone(identifier) ||
+      normalizeEmail(session.email) === normalizeEmail(identifier))
+  ) {
     const updated = { ...session, linkedStudentReg: normalized };
     saveSession(updated);
     return updated;

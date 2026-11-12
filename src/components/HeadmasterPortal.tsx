@@ -8,8 +8,17 @@ import {
   TeacherAttendanceStatus,
   User
 } from '../types';
-import { CreateClassInput, CreateStaffInput, CreateStudentInput } from '../services/api';
-import { ParentRegistrationInput } from '../services/auth';
+import {
+  CreateClassInput,
+  CreateStaffInput,
+  CreateStudentInput,
+  ParentProfile
+} from '../services/api';
+import {
+  ParentRegistrationInput,
+  isValidPhone,
+  normalizePhone
+} from '../services/auth';
 import { HeroSlide } from '../config/heroImages';
 import { HeroImagesManager } from './HeroImagesManager';
 import { imageFileToDataUrl } from '../utils/images';
@@ -33,6 +42,7 @@ import {
   Copy,
   Check,
   Mail,
+  Phone,
   AlertCircle,
   Plus,
   ClipboardList
@@ -52,6 +62,7 @@ interface HeadmasterPortalProps {
   classes: SchoolClass[];
   students: Student[];
   staff: User[];
+  parents: ParentProfile[];
   teacherAttendance: TeacherAttendanceRecord[];
   payments: FeePayment[];
   ledger: LedgerEntry[];
@@ -71,7 +82,7 @@ interface HeadmasterPortalProps {
     input: {
       name: string;
       email: string;
-      phone?: string;
+      phone: string;
       role: User['role'];
       title: string;
     }
@@ -192,6 +203,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   classes,
   students,
   staff,
+  parents,
   teacherAttendance,
   payments,
   ledger,
@@ -238,6 +250,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   const [staffMsg, setStaffMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [credentials, setCredentials] = useState<{
     name: string;
+    phone: string;
     email: string;
     password: string;
     role: string;
@@ -256,6 +269,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   const [parentMsg, setParentMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [parentCredentials, setParentCredentials] = useState<{
     name: string;
+    phone: string;
     email: string;
     password: string;
     student: string;
@@ -334,27 +348,76 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   const parentDirectory = useMemo(() => {
     const map = new Map<
       string,
-      { name: string; email: string; phone: string; children: string[] }
+      {
+        name: string;
+        email: string;
+        phone: string;
+        children: string[];
+        hasAccount: boolean;
+      }
     >();
-    students.forEach((student) => {
-      const email = (student.parentEmail ?? '').trim();
-      if (!email) return;
-      const key = email.toLowerCase();
+
+    const keyFor = (phone: string, email: string) => {
+      const normalizedPhone = normalizePhone(phone);
+      if (normalizedPhone) return `phone:${normalizedPhone}`;
+      const normalizedEmail = email.trim().toLowerCase();
+      return normalizedEmail ? `email:${normalizedEmail}` : '';
+    };
+
+    const addChild = (key: string, child: string) => {
+      const entry = map.get(key);
+      if (!entry || !child || entry.children.includes(child)) return;
+      entry.children.push(child);
+    };
+
+    parents.forEach((parent) => {
+      const key = keyFor(parent.phone, parent.email);
+      if (!key) return;
+      const child = parent.linkedStudentReg
+        ? parent.linkedStudentName
+          ? `${parent.linkedStudentName} (${parent.linkedStudentReg})`
+          : parent.linkedStudentReg
+        : '';
       const existing = map.get(key);
-      const child = `${student.firstName} ${student.lastName} (${student.regNumber})`;
       if (existing) {
-        existing.children.push(child);
+        existing.hasAccount = true;
+        if (parent.name) existing.name = parent.name;
+        if (parent.email) existing.email = parent.email;
+        addChild(key, child);
       } else {
         map.set(key, {
-          name: student.parentName || 'Parent / Guardian',
-          email,
-          phone: student.parentPhone ?? '',
-          children: [child]
+          name: parent.name || 'Parent / Guardian',
+          email: parent.email,
+          phone: parent.phone,
+          children: child ? [child] : [],
+          hasAccount: true
         });
       }
     });
+
+    students.forEach((student) => {
+      const key = keyFor(student.parentPhone ?? '', student.parentEmail ?? '');
+      if (!key) return;
+      const child = `${student.firstName} ${student.lastName} (${student.regNumber})`;
+      const existing = map.get(key);
+      if (existing) {
+        if (!existing.name || existing.name === 'Parent / Guardian') {
+          existing.name = student.parentName || existing.name;
+        }
+        addChild(key, child);
+      } else {
+        map.set(key, {
+          name: student.parentName || 'Parent / Guardian',
+          email: student.parentEmail ?? '',
+          phone: student.parentPhone ?? '',
+          children: [child],
+          hasAccount: false
+        });
+      }
+    });
+
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [students]);
+  }, [students, parents]);
 
   const totalBilled = students.reduce((a, s) => a + (s.tuitionFeeTerm ?? 0), 0);
   const totalCollected = students.reduce((a, s) => a + (s.paidAmount ?? 0), 0);
@@ -381,8 +444,22 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   const handleCreateStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     setStaffMsg(null);
-    if (!staffForm.name.trim() || !staffForm.email.trim()) {
-      setStaffMsg({ tone: 'error', text: 'Full name and work email are required.' });
+    if (!staffForm.name.trim()) {
+      setStaffMsg({ tone: 'error', text: 'Full name is required.' });
+      return;
+    }
+    if (!isValidPhone(staffForm.phone)) {
+      setStaffMsg({
+        tone: 'error',
+        text: 'Enter a valid phone number (e.g. 0788733564).'
+      });
+      return;
+    }
+    if (
+      staffForm.email.trim() &&
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(staffForm.email.trim())
+    ) {
+      setStaffMsg({ tone: 'error', text: 'Enter a valid email address or leave it blank.' });
       return;
     }
     if (staffForm.password.length < 8) {
@@ -397,14 +474,15 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
     try {
       const created = await onCreateStaff({
         name: staffForm.name.trim(),
+        phone: normalizePhone(staffForm.phone),
         email: staffForm.email.trim(),
-        phone: staffForm.phone.trim() || undefined,
         role: staffForm.role,
         title: staffForm.title.trim() || (staffForm.role === 'ACCOUNTANT' ? 'Accountant' : 'Teacher'),
         password
       });
       setCredentials({
         name: created.name,
+        phone: created.phone,
         email: created.email,
         password,
         role: roleLabel[created.role] ?? created.role
@@ -439,8 +517,18 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
       setParentMsg({ tone: 'error', text: 'Parent / guardian full name is required.' });
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parentForm.email.trim())) {
-      setParentMsg({ tone: 'error', text: 'Enter a valid parent email address.' });
+    if (!isValidPhone(parentForm.phone)) {
+      setParentMsg({
+        tone: 'error',
+        text: 'Enter a valid parent phone number (e.g. 0788733564).'
+      });
+      return;
+    }
+    if (
+      parentForm.email.trim() &&
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parentForm.email.trim())
+    ) {
+      setParentMsg({ tone: 'error', text: 'Enter a valid parent email or leave it blank.' });
       return;
     }
     if (parentForm.password.length < 8) {
@@ -458,18 +546,24 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
       return;
     }
 
-    const linkedStudent = students.find(
-      (student) =>
-        student.regNumber.toLowerCase() ===
-        parentForm.linkedStudentReg.trim().toLowerCase()
-    );
+    const linkedStudent = students.find((student) => {
+      const query = parentForm.linkedStudentReg.trim().toLowerCase();
+      const fullName = `${student.firstName} ${student.lastName}`.toLowerCase();
+      const reversedName = `${student.lastName} ${student.firstName}`.toLowerCase();
+      return (
+        student.regNumber.toLowerCase() === query ||
+        student.id.toLowerCase() === query ||
+        fullName === query ||
+        reversedName === query
+      );
+    });
     const password = parentForm.password;
     setParentBusy(true);
     try {
       await onRegisterParent({
         name: parentForm.name.trim(),
+        phone: normalizePhone(parentForm.phone),
         email: parentForm.email.trim(),
-        phone: parentForm.phone.trim() || undefined,
         password,
         linkedStudentReg: linkedStudent?.regNumber ?? parentForm.linkedStudentReg.trim(),
         linkedStudentName:
@@ -480,6 +574,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
       });
       setParentCredentials({
         name: parentForm.name.trim(),
+        phone: normalizePhone(parentForm.phone),
         email: parentForm.email.trim(),
         password,
         student: linkedStudent
@@ -661,11 +756,24 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
     if (!staffAction || staffAction.mode !== 'edit') return;
     setStaffActionBusy(true);
     setStaffActionError(null);
+    if (!isValidPhone(values.phone)) {
+      setStaffActionBusy(false);
+      setStaffActionError('Enter a valid phone number (e.g. 0788733564).');
+      return;
+    }
+    if (
+      values.email.trim() &&
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email.trim())
+    ) {
+      setStaffActionBusy(false);
+      setStaffActionError('Enter a valid email address or leave it blank.');
+      return;
+    }
     try {
       await onUpdateStaff(staffAction.member.id, {
         name: values.name.trim(),
         email: values.email.trim(),
-        phone: values.phone.trim() || undefined,
+        phone: normalizePhone(values.phone),
         role: staffAction.member.role,
         title: values.title.trim()
       });
@@ -806,8 +914,8 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   const staffEditFields: RecordEditField[] = [
     { key: 'name', label: 'Full name', required: true },
     { key: 'title', label: 'Title', required: true },
-    { key: 'email', label: 'Email address', type: 'email', required: true },
-    { key: 'phone', label: 'Phone' }
+    { key: 'phone', label: 'Phone number', required: true },
+    { key: 'email', label: 'Email address (optional)', type: 'email' }
   ];
 
   const classEditFields: RecordEditField[] = [
@@ -1085,21 +1193,23 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                   onChange={(e) => setStaffForm((f) => ({ ...f, title: e.target.value }))}
                 />
               </Field>
-              <Field label="Official work email">
+              <Field label="Phone number">
+                <input
+                  type="tel"
+                  required
+                  className={inputCls}
+                  placeholder="0788733564"
+                  value={staffForm.phone}
+                  onChange={(e) => setStaffForm((f) => ({ ...f, phone: e.target.value }))}
+                />
+              </Field>
+              <Field label="Email address (optional)">
                 <input
                   type="email"
                   className={inputCls}
                   placeholder="name@irerenursery.rw"
                   value={staffForm.email}
                   onChange={(e) => setStaffForm((f) => ({ ...f, email: e.target.value }))}
-                />
-              </Field>
-              <Field label="Phone (optional)">
-                <input
-                  className={inputCls}
-                  placeholder="+250 7xx xxx xxx"
-                  value={staffForm.phone}
-                  onChange={(e) => setStaffForm((f) => ({ ...f, phone: e.target.value }))}
                 />
               </Field>
               <Field label="Account password">
@@ -1139,10 +1249,14 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                   <div className="rounded-lg bg-white border border-orange-200 p-3">
-                    <p className="text-[10px] font-semibold text-slate-500 uppercase">Email</p>
+                    <p className="text-[10px] font-semibold text-slate-500 uppercase">
+                      Phone number
+                    </p>
                     <div className="flex items-center justify-between gap-2 mt-1">
-                      <span className="font-mono text-slate-800 break-all">{credentials.email}</span>
-                      <CopyButton value={credentials.email} />
+                      <span className="font-mono text-slate-800 break-all">
+                        {credentials.phone}
+                      </span>
+                      <CopyButton value={credentials.phone} />
                     </div>
                   </div>
                   <div className="rounded-lg bg-white border border-orange-200 p-3">
@@ -1156,11 +1270,23 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                       <CopyButton value={credentials.password} />
                     </div>
                   </div>
+                  {credentials.email && (
+                    <div className="rounded-lg bg-white border border-orange-200 p-3 sm:col-span-2">
+                      <p className="text-[10px] font-semibold text-slate-500 uppercase">
+                        Email (optional)
+                      </p>
+                      <div className="flex items-center justify-between gap-2 mt-1">
+                        <span className="font-mono text-slate-800 break-all">
+                          {credentials.email}
+                        </span>
+                        <CopyButton value={credentials.email} />
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <p className="text-[11px] text-orange-800">
-                  {credentials.name} · {credentials.role}. Shown once — store it securely. If your
-                  Supabase project requires email confirmation, confirm the address before the
-                  first login.
+                  {credentials.name} · {credentials.role}. Shown once — store it securely. Staff
+                  can log in with this phone number or the optional email.
                 </p>
               </div>
             )}
@@ -1210,9 +1336,15 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                           />
                         </div>
                         <p className="flex items-center justify-end gap-1 text-[10px] text-slate-400 mt-1">
-                          <Mail className="w-3 h-3" />
-                          <span className="truncate max-w-[140px]">{member.email}</span>
+                          <Phone className="w-3 h-3" />
+                          <span className="truncate max-w-[140px]">{member.phone || '—'}</span>
                         </p>
+                        {member.email && (
+                          <p className="flex items-center justify-end gap-1 text-[10px] text-slate-400">
+                            <Mail className="w-3 h-3" />
+                            <span className="truncate max-w-[140px]">{member.email}</span>
+                          </p>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1242,21 +1374,23 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                   onChange={(e) => setParentForm((f) => ({ ...f, name: e.target.value }))}
                 />
               </Field>
-              <Field label="Email address">
+              <Field label="Phone number">
+                <input
+                  type="tel"
+                  required
+                  className={inputCls}
+                  placeholder="0788733564"
+                  value={parentForm.phone}
+                  onChange={(e) => setParentForm((f) => ({ ...f, phone: e.target.value }))}
+                />
+              </Field>
+              <Field label="Email address (optional)">
                 <input
                   type="email"
                   className={inputCls}
                   placeholder="parent@example.com"
                   value={parentForm.email}
                   onChange={(e) => setParentForm((f) => ({ ...f, email: e.target.value }))}
-                />
-              </Field>
-              <Field label="Phone (optional)">
-                <input
-                  className={inputCls}
-                  placeholder="+250 7xx xxx xxx"
-                  value={parentForm.phone}
-                  onChange={(e) => setParentForm((f) => ({ ...f, phone: e.target.value }))}
                 />
               </Field>
               <Field label="Account password">
@@ -1271,7 +1405,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                   onChange={(e) => setParentForm((f) => ({ ...f, password: e.target.value }))}
                 />
               </Field>
-              <Field label="Child registration number">
+              <Field label="Child registration number / ID or full name">
                 <input
                   className={`${inputCls} font-mono uppercase`}
                   placeholder="IRR-2026-001"
@@ -1324,12 +1458,14 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                   <div className="rounded-lg bg-white border border-orange-200 p-3">
-                    <p className="text-[10px] font-semibold text-slate-500 uppercase">Email</p>
+                    <p className="text-[10px] font-semibold text-slate-500 uppercase">
+                      Phone number
+                    </p>
                     <div className="flex items-center justify-between gap-2 mt-1">
                       <span className="font-mono text-slate-800 break-all">
-                        {parentCredentials.email}
+                        {parentCredentials.phone}
                       </span>
-                      <CopyButton value={parentCredentials.email} />
+                      <CopyButton value={parentCredentials.phone} />
                     </div>
                   </div>
                   <div className="rounded-lg bg-white border border-orange-200 p-3">
@@ -1343,11 +1479,24 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                       <CopyButton value={parentCredentials.password} />
                     </div>
                   </div>
+                  {parentCredentials.email && (
+                    <div className="rounded-lg bg-white border border-orange-200 p-3 sm:col-span-2">
+                      <p className="text-[10px] font-semibold text-slate-500 uppercase">
+                        Email (optional)
+                      </p>
+                      <div className="flex items-center justify-between gap-2 mt-1">
+                        <span className="font-mono text-slate-800 break-all">
+                          {parentCredentials.email}
+                        </span>
+                        <CopyButton value={parentCredentials.email} />
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <p className="text-[11px] text-orange-800">
                   {parentCredentials.name} · linked to {parentCredentials.student}. Shown once —
-                  store it securely. If your Supabase project requires email confirmation, confirm
-                  the address before the first login.
+                  store it securely. The parent can log in with this phone number or the optional
+                  email.
                 </p>
               </div>
             )}
@@ -1366,7 +1515,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                 <div className="divide-y divide-slate-100">
                   {parentDirectory.map((parent) => (
                     <div
-                      key={parent.email}
+                      key={parent.phone || parent.email || parent.name}
                       className="p-4 flex items-start justify-between gap-3"
                     >
                       <div className="flex items-start gap-3 min-w-0">
@@ -1381,19 +1530,27 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                           <p className="text-sm font-semibold text-slate-800 truncate">
                             {parent.name}
                           </p>
-                          <p className="text-[11px] text-slate-500 truncate">{parent.email}</p>
-                          {parent.phone && (
-                            <p className="text-[10px] text-slate-400">{parent.phone}</p>
+                          <p className="text-[11px] text-slate-500 truncate">
+                            {parent.phone || 'No phone on record'}
+                          </p>
+                          {parent.email && (
+                            <p className="text-[10px] text-slate-400 truncate">{parent.email}</p>
                           )}
                         </div>
                       </div>
                       <div className="text-right shrink-0 max-w-[45%]">
-                        <Badge tone="orange">
-                          {parent.children.length} {parent.children.length === 1 ? 'child' : 'children'}
-                        </Badge>
-                        <p className="text-[10px] text-slate-400 mt-1 truncate">
-                          {parent.children.join(', ')}
-                        </p>
+                        <div className="flex items-center justify-end gap-1.5">
+                          {parent.hasAccount && <Badge tone="emerald">Account</Badge>}
+                          <Badge tone="orange">
+                            {parent.children.length}{' '}
+                            {parent.children.length === 1 ? 'child' : 'children'}
+                          </Badge>
+                        </div>
+                        {parent.children.length > 0 && (
+                          <p className="text-[10px] text-slate-400 mt-1 truncate">
+                            {parent.children.join(', ')}
+                          </p>
+                        )}
                       </div>
                     </div>
                   ))}
