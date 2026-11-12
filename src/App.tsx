@@ -702,8 +702,6 @@ export default function App() {
         slides={heroSlides}
         schoolLogo={schoolLogo}
         onEnter={() => setView(activeUser ? 'PORTALS' : 'AUTH')}
-        onSelectFiles={handleSelectHeroImages}
-        onResetSlides={handleResetHeroSlides}
       />
     );
   }
@@ -730,6 +728,9 @@ export default function App() {
             teacherAttendance={teacherAttendance}
             payments={payments}
             ledger={ledger}
+            heroSlides={heroSlides}
+            onSelectHeroImages={handleSelectHeroImages}
+            onResetHeroSlides={handleResetHeroSlides}
             onApprove={(id) => handleReviewAttendance(id, 'APPROVED')}
             onReject={(id) => handleReviewAttendance(id, 'REJECTED')}
             onCreateStaff={handleCreateStaff}

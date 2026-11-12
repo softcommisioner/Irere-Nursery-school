@@ -1,11 +1,10 @@
 /**
  * Hero / landing background image slots.
  *
- * Administrators select the school's real photos directly from their device
- * using the "Manage images" panel on the hero. Selected files are previewed
- * instantly via `URL.createObjectURL()` (see `App`), so no external URLs are
- * required. Until images are chosen, each slot shows a clean CSS placeholder —
- * no generated/fake imagery is used.
+ * The Headmaster selects the school's real photos from the secure Headmaster
+ * portal. Selected files are previewed instantly via `URL.createObjectURL()`
+ * (see `App`), so no external URLs are required. Until images are chosen, each
+ * slot shows a clean CSS placeholder — no generated/fake imagery is used.
  */
 export interface HeroSlide {
   id: string;

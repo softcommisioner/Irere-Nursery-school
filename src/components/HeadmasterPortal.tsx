@@ -10,6 +10,8 @@ import {
 } from '../types';
 import { CreateClassInput, CreateStaffInput, CreateStudentInput } from '../services/api';
 import { ParentRegistrationInput } from '../services/auth';
+import { HeroSlide } from '../config/heroImages';
+import { HeroImagesManager } from './HeroImagesManager';
 import { imageFileToDataUrl } from '../utils/images';
 import {
   Users,
@@ -53,6 +55,9 @@ interface HeadmasterPortalProps {
   teacherAttendance: TeacherAttendanceRecord[];
   payments: FeePayment[];
   ledger: LedgerEntry[];
+  heroSlides: HeroSlide[];
+  onSelectHeroImages: (files: File[]) => void;
+  onResetHeroSlides: () => void;
   onApprove: (id: string) => Promise<void>;
   onReject: (id: string) => Promise<void>;
   onCreateStaff: (input: CreateStaffInput) => Promise<User>;
@@ -108,7 +113,8 @@ type Tab =
   | 'STUDENTS'
   | 'CLASSES'
   | 'ATTENDANCE'
-  | 'FINANCE';
+  | 'FINANCE'
+  | 'HERO';
 
 const formatRwf = (amount: number) => `${(amount ?? 0).toLocaleString()} RWF`;
 
@@ -189,6 +195,9 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   teacherAttendance,
   payments,
   ledger,
+  heroSlides,
+  onSelectHeroImages,
+  onResetHeroSlides,
   onApprove,
   onReject,
   onCreateStaff,
@@ -922,7 +931,8 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
       <div>
         <h1 className="text-xl sm:text-2xl font-extrabold text-slate-800">Headmaster Portal</h1>
         <p className="text-xs sm:text-sm text-slate-500 mt-1">
-          Manage staff accounts, student registration, classes, and review attendance &amp; finance.
+          Manage staff accounts, student registration, classes, hero images, and review attendance
+          &amp; finance.
         </p>
       </div>
 
@@ -940,9 +950,18 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
             label: `Attendance${pending.length ? ` (${pending.length})` : ''}`,
             icon: <ClipboardList className="w-3.5 h-3.5" />
           },
-          { id: 'FINANCE', label: 'Finance', icon: <Wallet className="w-3.5 h-3.5" /> }
+          { id: 'FINANCE', label: 'Finance', icon: <Wallet className="w-3.5 h-3.5" /> },
+          { id: 'HERO', label: 'Hero Images', icon: <ImagePlus className="w-3.5 h-3.5" /> }
         ]}
       />
+
+      {tab === 'HERO' && (
+        <HeroImagesManager
+          slides={heroSlides}
+          onSelectFiles={onSelectHeroImages}
+          onResetSlides={onResetHeroSlides}
+        />
+      )}
 
       {/* ------------------------------- OVERVIEW ------------------------------ */}
       {tab === 'OVERVIEW' && (
