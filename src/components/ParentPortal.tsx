@@ -131,10 +131,18 @@ export const ParentPortal: React.FC<ParentPortalProps> = ({
 
       {student ? (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5 flex items-center gap-4">
-          <span className="w-12 h-12 shrink-0 rounded-full bg-orange-100 text-orange-600 font-extrabold text-lg flex items-center justify-center">
-            {student.firstName[0]}
-            {student.lastName[0]}
-          </span>
+          {student.photoUrl ? (
+            <img
+              src={student.photoUrl}
+              alt={`${student.firstName} ${student.lastName}`}
+              className="w-12 h-12 shrink-0 rounded-full border-2 border-orange-200 object-cover bg-slate-100"
+            />
+          ) : (
+            <span className="w-12 h-12 shrink-0 rounded-full bg-orange-100 text-orange-600 font-extrabold text-lg flex items-center justify-center">
+              {student.firstName[0]}
+              {student.lastName[0]}
+            </span>
+          )}
           <div className="min-w-0">
             <p className="text-sm font-bold text-slate-800 truncate">
               {student.firstName} {student.lastName}

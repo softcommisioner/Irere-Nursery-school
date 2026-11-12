@@ -135,7 +135,8 @@ const TABLE_CANDIDATES = {
   ledger: ['ledger', 'ledger_entries', 'financial_ledger'],
   curriculum: ['curriculum', 'curriculum_materials'],
   evaluations: ['evaluations', 'student_milestone_evaluations'],
-  feedback: ['feedback', 'parent_feedback', 'parent_feedback_messages']
+  feedback: ['feedback', 'parent_feedback', 'parent_feedback_messages'],
+  schoolSettings: ['school_settings']
 } as const;
 
 const resolvedTables = new Map<TableGroup, string>();
@@ -490,11 +491,27 @@ export interface CreateStudentInput {
   parentPhone: string;
   parentEmail: string;
   residenceVillage: string;
+  photoUrl?: string;
   tuitionFeeTerm: number;
 }
 
+function isMissingPhotoColumnError(error: unknown): boolean {
+  return error instanceof ApiError && /unknown columns:.*photo_url/i.test(error.message);
+}
+
+const PHOTO_MIGRATION_HINT =
+  'The students table does not have a photo_url column yet. Run `npm run db:apply-schema` to apply the student photo migration, then try again.';
+
 export async function createStudent(input: CreateStudentInput): Promise<Student> {
-  const created = await insertOne<Student>('students', input);
+  let created: Student;
+  try {
+    created = await insertOne<Student>('students', input);
+  } catch (error) {
+    if (input.photoUrl && isMissingPhotoColumnError(error)) {
+      throw new ApiError(PHOTO_MIGRATION_HINT, 400);
+    }
+    throw error;
+  }
   return {
     ...created,
     id: created.id ?? fallbackId('stu'),
@@ -507,7 +524,16 @@ export async function createStudent(input: CreateStudentInput): Promise<Student>
 export type UpdateStudentInput = Omit<CreateStudentInput, 'regNumber'>;
 
 export async function updateStudent(id: string, input: UpdateStudentInput): Promise<Student> {
-  const updated = await patchOne<Student | undefined>('students', id, input);
+  let updated: Student | undefined;
+  try {
+    updated = await patchOne<Student | undefined>('students', id, input);
+  } catch (error) {
+    if (!isMissingPhotoColumnError(error)) throw error;
+
+    if (input.photoUrl) throw new ApiError(PHOTO_MIGRATION_HINT, 400);
+    const { photoUrl: _photoUrl, ...withoutPhoto } = input;
+    updated = await patchOne<Student | undefined>('students', id, withoutPhoto);
+  }
   if (!updated) {
     throw new ApiError('Student not found or could not be updated.', 404);
   }
@@ -554,6 +580,33 @@ export async function deleteStudent(id: string): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* School branding / settings                                                 */
+/* -------------------------------------------------------------------------- */
+
+export interface SchoolSettings {
+  id: string;
+  logoUrl?: string;
+  updatedAt?: string;
+}
+
+export async function getSchoolSettings(): Promise<SchoolSettings | null> {
+  const rows = await readList<SchoolSettings>('schoolSettings');
+  return rows[0] ?? null;
+}
+
+export async function updateSchoolLogo(logoUrl: string): Promise<SchoolSettings> {
+  const existing = await getSchoolSettings();
+  const payload = {
+    logoUrl,
+    updatedAt: new Date().toISOString()
+  };
+  if (existing) {
+    return patchOne<SchoolSettings>('schoolSettings', existing.id, payload);
+  }
+  return insertOne<SchoolSettings>('schoolSettings', { id: 'main', ...payload });
+}
+
+/* -------------------------------------------------------------------------- */
 /* Staff accounts                                                             */
 /* -------------------------------------------------------------------------- */
 
@@ -582,6 +635,26 @@ export async function createStaff(input: CreateStaffInput): Promise<User> {
   };
 }
 
+export type UpdateStaffInput = Omit<Pick<User, 'name' | 'email' | 'phone' | 'role' | 'title'>, 'phone'> & {
+  phone?: string;
+};
+
+export async function updateStaff(id: string, input: UpdateStaffInput): Promise<User> {
+  const updated = await patchOne<User>('staff', id, input);
+  return {
+    ...updated,
+    id: updated.id ?? id,
+    phone: updated.phone ?? input.phone ?? ''
+  };
+}
+
+export async function deleteStaff(id: string): Promise<void> {
+  await tableRequest<unknown[]>('staff', {
+    method: 'DELETE',
+    query: `?id=eq.${encodeURIComponent(id)}`
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Class management                                                           */
 /* -------------------------------------------------------------------------- */
@@ -604,6 +677,24 @@ export async function createClass(input: CreateClassInput): Promise<SchoolClass>
     id: created.id ?? fallbackId('cls'),
     studentCount: created.studentCount ?? 0
   };
+}
+
+export type UpdateClassInput = CreateClassInput;
+
+export async function updateClass(id: string, input: UpdateClassInput): Promise<SchoolClass> {
+  const updated = await patchOne<SchoolClass>('classes', id, input);
+  return {
+    ...updated,
+    id: updated.id ?? id,
+    studentCount: updated.studentCount ?? 0
+  };
+}
+
+export async function deleteClass(id: string): Promise<void> {
+  await tableRequest<unknown[]>('classes', {
+    method: 'DELETE',
+    query: `?id=eq.${encodeURIComponent(id)}`
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -657,6 +748,29 @@ export async function reviewTeacherAttendance(
   };
 }
 
+export type UpdateTeacherAttendanceInput = Pick<
+  TeacherAttendanceRecord,
+  'date' | 'checkInTime' | 'checkOutTime' | 'notes' | 'status'
+>;
+
+export async function updateTeacherAttendance(
+  id: string,
+  input: UpdateTeacherAttendanceInput
+): Promise<TeacherAttendanceRecord> {
+  const updated = await patchOne<TeacherAttendanceRecord>('teacherAttendance', id, input);
+  return {
+    ...updated,
+    id: updated.id ?? id
+  };
+}
+
+export async function deleteTeacherAttendance(id: string): Promise<void> {
+  await tableRequest<unknown[]>('teacherAttendance', {
+    method: 'DELETE',
+    query: `?id=eq.${encodeURIComponent(id)}`
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Student attendance                                                         */
 /* -------------------------------------------------------------------------- */
@@ -707,6 +821,37 @@ export async function recordPayment(input: RecordPaymentInput): Promise<FeePayme
   };
 }
 
+export type UpdateFeePaymentInput = Pick<
+  FeePayment,
+  | 'amount'
+  | 'academicTerm'
+  | 'paymentMethod'
+  | 'momoTransactionRef'
+  | 'payerName'
+  | 'payerPhone'
+  | 'paymentDate'
+  | 'status'
+>;
+
+export async function updateFeePayment(
+  id: string,
+  input: UpdateFeePaymentInput
+): Promise<FeePayment> {
+  const updated = await patchOne<FeePayment>('payments', id, input);
+  return {
+    ...updated,
+    id: updated.id ?? id,
+    status: updated.status ?? input.status
+  };
+}
+
+export async function deleteFeePayment(id: string): Promise<void> {
+  await tableRequest<unknown[]>('payments', {
+    method: 'DELETE',
+    query: `?id=eq.${encodeURIComponent(id)}`
+  });
+}
+
 export async function getLedger(): Promise<LedgerEntry[]> {
   return readList<LedgerEntry>('ledger');
 }
@@ -719,6 +864,26 @@ export async function createLedgerEntry(input: LedgerEntryInput): Promise<Ledger
     ...created,
     id: created.id ?? fallbackId('led')
   };
+}
+
+export type UpdateLedgerEntryInput = LedgerEntryInput;
+
+export async function updateLedgerEntry(
+  id: string,
+  input: UpdateLedgerEntryInput
+): Promise<LedgerEntry> {
+  const updated = await patchOne<LedgerEntry>('ledger', id, input);
+  return {
+    ...updated,
+    id: updated.id ?? id
+  };
+}
+
+export async function deleteLedgerEntry(id: string): Promise<void> {
+  await tableRequest<unknown[]>('ledger', {
+    method: 'DELETE',
+    query: `?id=eq.${encodeURIComponent(id)}`
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -740,6 +905,27 @@ export async function uploadCurriculum(
     id: created.id ?? fallbackId('cur'),
     uploadDate: created.uploadDate ?? new Date().toISOString().slice(0, 10)
   };
+}
+
+export type UpdateCurriculumInput = CurriculumUploadInput;
+
+export async function updateCurriculum(
+  id: string,
+  input: UpdateCurriculumInput
+): Promise<CurriculumMaterial> {
+  const updated = await patchOne<CurriculumMaterial>('curriculum', id, input);
+  return {
+    ...updated,
+    id: updated.id ?? id,
+    uploadDate: updated.uploadDate ?? new Date().toISOString().slice(0, 10)
+  };
+}
+
+export async function deleteCurriculum(id: string): Promise<void> {
+  await tableRequest<unknown[]>('curriculum', {
+    method: 'DELETE',
+    query: `?id=eq.${encodeURIComponent(id)}`
+  });
 }
 
 /* -------------------------------------------------------------------------- */

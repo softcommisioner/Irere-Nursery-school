@@ -2,12 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { SchoolClass, Student } from '../types';
 import {
   AlertCircle,
+  ImagePlus,
   Loader2,
   Pencil,
   Save,
   Trash2,
   X
 } from 'lucide-react';
+import { imageFileToDataUrl } from '../utils/images';
 import { cx } from './ui';
 
 const inputCls =
@@ -92,8 +94,193 @@ export interface StudentEditValues {
   parentPhone: string;
   parentEmail: string;
   residenceVillage: string;
+  photoUrl?: string;
   tuitionFeeTerm: number;
 }
+
+export type RecordEditFieldType =
+  | 'text'
+  | 'email'
+  | 'number'
+  | 'date'
+  | 'textarea'
+  | 'select';
+
+export interface RecordEditField {
+  key: string;
+  label: string;
+  type?: RecordEditFieldType;
+  options?: { value: string; label: string }[];
+  placeholder?: string;
+  required?: boolean;
+  min?: number;
+  fullWidth?: boolean;
+}
+
+/**
+ * Generic pre-filled edit modal used by the management portals for staff,
+ * classes, attendance, payments, ledger entries and curriculum materials.
+ */
+export const RecordEditModal: React.FC<{
+  title: string;
+  subtitle?: string;
+  icon?: React.ReactNode;
+  fields: RecordEditField[];
+  initialValues: Record<string, string | number | undefined>;
+  busy?: boolean;
+  error?: string | null;
+  onClose: () => void;
+  onSave: (values: Record<string, string>) => Promise<void>;
+}> = ({ title, subtitle, icon, fields, initialValues, busy, error, onClose, onSave }) => {
+  const [form, setForm] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      fields.map((field) => [field.key, String(initialValues[field.key] ?? '')])
+    )
+  );
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const update = (key: string, value: string) =>
+    setForm((current) => ({ ...current, [key]: value }));
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLocalError(null);
+
+    const missing = fields.find(
+      (field) => field.required && (form[field.key] ?? '').trim() === ''
+    );
+    if (missing) {
+      setLocalError(`${missing.label} is required.`);
+      return;
+    }
+
+    try {
+      await onSave(form);
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Could not save the changes.');
+    }
+  };
+
+  return (
+    <ModalShell
+      title={title}
+      subtitle={subtitle}
+      icon={icon ?? <Pencil className="w-4 h-4" />}
+      onClose={onClose}
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {fields.map((field) => (
+            <Field
+              key={field.key}
+              label={field.label}
+              className={field.fullWidth || field.type === 'textarea' ? 'sm:col-span-2' : undefined}
+            >
+              {field.type === 'textarea' ? (
+                <textarea
+                  rows={3}
+                  className={`${inputCls} resize-none`}
+                  placeholder={field.placeholder}
+                  value={form[field.key] ?? ''}
+                  onChange={(event) => update(field.key, event.target.value)}
+                />
+              ) : field.type === 'select' ? (
+                <select
+                  className={inputCls}
+                  value={form[field.key] ?? ''}
+                  onChange={(event) => update(field.key, event.target.value)}
+                >
+                  {field.options?.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type={field.type ?? 'text'}
+                  min={field.min}
+                  className={inputCls}
+                  placeholder={field.placeholder}
+                  value={form[field.key] ?? ''}
+                  onChange={(event) => update(field.key, event.target.value)}
+                />
+              )}
+            </Field>
+          ))}
+        </div>
+
+        {(localError || error) && <ErrorNotice>{localError ?? error}</ErrorNotice>}
+
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={busy}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-bold text-white bg-orange-500 hover:bg-orange-600 transition-colors disabled:opacity-50"
+          >
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            Save changes
+          </button>
+        </div>
+      </form>
+    </ModalShell>
+  );
+};
+
+/** Compact Edit / Delete icon pair for management cards and list rows. */
+export const CardActions: React.FC<{
+  onEdit?: () => void;
+  onDelete?: () => void;
+  editLabel?: string;
+  deleteLabel?: string;
+  busy?: boolean;
+  className?: string;
+}> = ({ onEdit, onDelete, editLabel = 'Edit', deleteLabel = 'Delete', busy, className }) => (
+  <div className={cx('flex items-center gap-1.5', className)}>
+    {onEdit && (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onEdit();
+        }}
+        title={editLabel}
+        aria-label={editLabel}
+        className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-orange-50 hover:text-orange-600 hover:border-orange-300 transition-colors"
+      >
+        <Pencil className="w-3.5 h-3.5" />
+      </button>
+    )}
+    {onDelete && (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onDelete();
+        }}
+        disabled={busy}
+        title={deleteLabel}
+        aria-label={deleteLabel}
+        className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-300 transition-colors disabled:opacity-50"
+      >
+        {busy ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        ) : (
+          <Trash2 className="w-3.5 h-3.5" />
+        )}
+      </button>
+    )}
+  </div>
+);
+
 
 export const StudentEditModal: React.FC<{
   student: Student;
@@ -114,9 +301,28 @@ export const StudentEditModal: React.FC<{
     parentPhone: student.parentPhone ?? '',
     parentEmail: student.parentEmail ?? '',
     residenceVillage: student.residenceVillage ?? '',
+    photoUrl: student.photoUrl ?? '',
     tuitionFeeTerm: student.tuitionFeeTerm ?? 0
   }));
   const [localError, setLocalError] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+
+  const handlePhotoChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setLocalError(null);
+    setPhotoBusy(true);
+    try {
+      const dataUrl = await imageFileToDataUrl(file);
+      setForm((f) => ({ ...f, photoUrl: dataUrl }));
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Could not process the photo.');
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -171,6 +377,61 @@ export const StudentEditModal: React.FC<{
               onChange={(e) => setForm((f) => ({ ...f, lastName: e.target.value }))}
             />
           </Field>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <div className="flex items-center gap-3">
+            {form.photoUrl ? (
+              <img
+                src={form.photoUrl}
+                alt="Student preview"
+                className="w-16 h-20 shrink-0 rounded-lg border-2 border-orange-200 object-cover bg-white"
+              />
+            ) : (
+              <span className="w-16 h-20 shrink-0 rounded-lg border-2 border-dashed border-slate-300 bg-white text-slate-400 flex items-center justify-center">
+                <ImagePlus className="w-6 h-6" />
+              </span>
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-bold text-slate-800">Student photo</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">
+                JPG, PNG or WebP. Used on profile cards and the report card.
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <label
+                  className={cx(
+                    'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-[11px] font-semibold text-slate-700 transition-colors',
+                    photoBusy ? 'opacity-60 cursor-wait' : 'cursor-pointer hover:bg-orange-50 hover:text-orange-700'
+                  )}
+                >
+                  {photoBusy ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <ImagePlus className="w-3.5 h-3.5" />
+                  )}
+                  {form.photoUrl ? 'Change photo' : 'Upload photo'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={photoBusy || busy}
+                    onChange={(event) => void handlePhotoChange(event)}
+                  />
+                </label>
+                {form.photoUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, photoUrl: '' }))}
+                    disabled={photoBusy || busy}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-rose-200 bg-white text-[11px] font-semibold text-rose-600 hover:bg-rose-50 transition-colors disabled:opacity-50"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Remove
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -366,10 +627,26 @@ export const StudentRegisterTable: React.FC<{
               {student.regNumber}
             </td>
             <td className="py-3 px-4">
-              <p className="font-semibold text-slate-800">
-                {student.firstName} {student.lastName}
-              </p>
-              <p className="text-[10px] text-slate-400">{student.dob}</p>
+              <div className="flex items-center gap-2.5">
+                {student.photoUrl ? (
+                  <img
+                    src={student.photoUrl}
+                    alt={`${student.firstName} ${student.lastName}`}
+                    className="w-9 h-9 shrink-0 rounded-full border border-orange-200 object-cover bg-slate-100"
+                  />
+                ) : (
+                  <span className="w-9 h-9 shrink-0 rounded-full bg-orange-100 text-orange-700 text-[10px] font-extrabold flex items-center justify-center">
+                    {student.firstName[0]}
+                    {student.lastName[0]}
+                  </span>
+                )}
+                <div className="min-w-0">
+                  <p className="font-semibold text-slate-800">
+                    {student.firstName} {student.lastName}
+                  </p>
+                  <p className="text-[10px] text-slate-400">{student.dob}</p>
+                </div>
+              </div>
             </td>
             <td className="py-3 px-4">
               <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-100 px-2.5 py-0.5 text-[11px] font-semibold text-orange-800">

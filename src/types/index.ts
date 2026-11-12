@@ -38,6 +38,7 @@ export interface Student {
   parentPhone: string;
   parentEmail: string;
   residenceVillage: string; // e.g. "Ngaruyinka", "Gasharu", "Kagugu"
+  photoUrl?: string; // persisted image data URL
   tuitionFeeTerm: number; // in RWF
   paidAmount: number; // in RWF
   balance: number; // in RWF

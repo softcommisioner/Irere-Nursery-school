@@ -11,12 +11,14 @@ import {
 import { CreateClassInput, CreateStaffInput, CreateStudentInput } from '../services/api';
 import { ParentRegistrationInput } from '../services/auth';
 import { generatePassword } from '../utils/generators';
+import { imageFileToDataUrl } from '../utils/images';
 import {
   Users,
   UserCog,
   UserPlus,
   UserCheck,
   GraduationCap,
+  ImagePlus,
   Layers,
   CheckCircle2,
   Clock,
@@ -35,12 +37,15 @@ import {
   ClipboardList
 } from 'lucide-react';
 import {
+  CardActions,
   ConfirmDialog,
+  RecordEditModal,
+  RecordEditField,
   StudentEditModal,
   StudentEditValues,
   StudentRegisterTable
 } from './StudentDialogs';
-import { Badge, EmptyState, ProgressBar, SectionCard, StatCard, Tabs } from './ui';
+import { Badge, EmptyState, ProgressBar, SectionCard, StatCard, Tabs, cx } from './ui';
 
 interface HeadmasterPortalProps {
   classes: SchoolClass[];
@@ -57,6 +62,44 @@ interface HeadmasterPortalProps {
   onUpdateStudent: (id: string, values: StudentEditValues) => Promise<void>;
   onDeleteStudent: (id: string) => Promise<void>;
   onCreateClass: (input: CreateClassInput) => Promise<SchoolClass>;
+  onUpdateStaff: (
+    id: string,
+    input: {
+      name: string;
+      email: string;
+      phone?: string;
+      role: User['role'];
+      title: string;
+    }
+  ) => Promise<void>;
+  onDeleteStaff: (id: string) => Promise<void>;
+  onUpdateClass: (id: string, input: CreateClassInput) => Promise<void>;
+  onDeleteClass: (id: string) => Promise<void>;
+  onUpdateTeacherAttendance: (
+    id: string,
+    input: {
+      date: string;
+      checkInTime: string;
+      checkOutTime?: string;
+      notes?: string;
+      status: TeacherAttendanceStatus;
+    }
+  ) => Promise<void>;
+  onDeleteTeacherAttendance: (id: string) => Promise<void>;
+  onUpdatePayment: (
+    id: string,
+    input: {
+      amount: number;
+      academicTerm: string;
+      paymentMethod: FeePayment['paymentMethod'];
+      momoTransactionRef?: string;
+      payerName: string;
+      payerPhone: string;
+      paymentDate: string;
+      status: FeePayment['status'];
+    }
+  ) => Promise<void>;
+  onDeletePayment: (id: string) => Promise<void>;
 }
 
 type Tab =
@@ -154,7 +197,15 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   onRegisterStudent,
   onUpdateStudent,
   onDeleteStudent,
-  onCreateClass
+  onCreateClass,
+  onUpdateStaff,
+  onDeleteStaff,
+  onUpdateClass,
+  onDeleteClass,
+  onUpdateTeacherAttendance,
+  onDeleteTeacherAttendance,
+  onUpdatePayment,
+  onDeletePayment
 }) => {
   const [tab, setTab] = useState<Tab>('OVERVIEW');
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -204,9 +255,11 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
     parentPhone: '',
     parentEmail: '',
     residenceVillage: 'Ngaruyinka',
+    photoUrl: '',
     tuitionFeeTerm: 180000
   });
   const [studentBusy, setStudentBusy] = useState(false);
+  const [studentPhotoBusy, setStudentPhotoBusy] = useState(false);
   const [studentMsg, setStudentMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [editBusy, setEditBusy] = useState(false);
@@ -227,6 +280,35 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
   });
   const [classBusy, setClassBusy] = useState(false);
   const [classMsg, setClassMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+
+  /* ------------------------- Card edit / delete state ------------------- */
+  const [staffAction, setStaffAction] = useState<{
+    mode: 'edit' | 'delete';
+    member: User;
+  } | null>(null);
+  const [staffActionBusy, setStaffActionBusy] = useState(false);
+  const [staffActionError, setStaffActionError] = useState<string | null>(null);
+
+  const [classAction, setClassAction] = useState<{
+    mode: 'edit' | 'delete';
+    item: SchoolClass;
+  } | null>(null);
+  const [classActionBusy, setClassActionBusy] = useState(false);
+  const [classActionError, setClassActionError] = useState<string | null>(null);
+
+  const [attendanceAction, setAttendanceAction] = useState<{
+    mode: 'edit' | 'delete';
+    record: TeacherAttendanceRecord;
+  } | null>(null);
+  const [attendanceActionBusy, setAttendanceActionBusy] = useState(false);
+  const [attendanceActionError, setAttendanceActionError] = useState<string | null>(null);
+
+  const [paymentAction, setPaymentAction] = useState<{
+    mode: 'edit' | 'delete';
+    payment: FeePayment;
+  } | null>(null);
+  const [paymentActionBusy, setPaymentActionBusy] = useState(false);
+  const [paymentActionError, setPaymentActionError] = useState<string | null>(null);
 
   /* ------------------------------- Derived ------------------------------ */
   const pending = teacherAttendance.filter((r) => r.status === 'PENDING');
@@ -387,6 +469,26 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
     }
   };
 
+  const handleStudentPhotoChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setStudentMsg(null);
+    setStudentPhotoBusy(true);
+    try {
+      const dataUrl = await imageFileToDataUrl(file);
+      setStudentForm((f) => ({ ...f, photoUrl: dataUrl }));
+    } catch (err) {
+      setStudentMsg({
+        tone: 'error',
+        text: err instanceof Error ? err.message : 'Could not process the student photo.'
+      });
+    } finally {
+      setStudentPhotoBusy(false);
+    }
+  };
+
   const handleRegisterStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     setStudentMsg(null);
@@ -412,6 +514,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
         parentPhone: studentForm.parentPhone.trim(),
         parentEmail: studentForm.parentEmail.trim(),
         residenceVillage: studentForm.residenceVillage.trim(),
+        photoUrl: studentForm.photoUrl || undefined,
         tuitionFeeTerm: Number(studentForm.tuitionFeeTerm) || 0
       });
       setStudentMsg({
@@ -428,6 +531,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
         parentPhone: '',
         parentEmail: '',
         residenceVillage: 'Ngaruyinka',
+        photoUrl: '',
         tuitionFeeTerm: 180000
       });
     } catch (err) {
@@ -514,9 +618,236 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
     }
   };
 
+  const handleSaveStaffEdit = async (values: Record<string, string>) => {
+    if (!staffAction || staffAction.mode !== 'edit') return;
+    setStaffActionBusy(true);
+    setStaffActionError(null);
+    try {
+      await onUpdateStaff(staffAction.member.id, {
+        name: values.name.trim(),
+        email: values.email.trim(),
+        phone: values.phone.trim() || undefined,
+        role: staffAction.member.role,
+        title: values.title.trim()
+      });
+      setStaffAction(null);
+    } catch (err) {
+      setStaffActionError(err instanceof Error ? err.message : 'Could not update the staff account.');
+    } finally {
+      setStaffActionBusy(false);
+    }
+  };
+
+  const handleConfirmStaffDelete = async () => {
+    if (!staffAction || staffAction.mode !== 'delete') return;
+    setStaffActionBusy(true);
+    setStaffActionError(null);
+    try {
+      await onDeleteStaff(staffAction.member.id);
+      setStaffAction(null);
+    } catch (err) {
+      setStaffActionError(err instanceof Error ? err.message : 'Could not delete the staff account.');
+    } finally {
+      setStaffActionBusy(false);
+    }
+  };
+
+  const handleSaveClassEdit = async (values: Record<string, string>) => {
+    if (!classAction || classAction.mode !== 'edit') return;
+    setClassActionBusy(true);
+    setClassActionError(null);
+    try {
+      await onUpdateClass(classAction.item.id, {
+        code: values.code.trim(),
+        name: values.name.trim(),
+        kinyarwandaName: values.kinyarwandaName.trim(),
+        ageRange: values.ageRange.trim(),
+        teacherId: classAction.item.teacherId,
+        teacherName: values.teacherName.trim() || 'Unassigned',
+        roomNumber: values.roomNumber.trim() || 'TBD',
+        capacity: Number(values.capacity) || 0
+      });
+      setClassAction(null);
+    } catch (err) {
+      setClassActionError(err instanceof Error ? err.message : 'Could not update the class.');
+    } finally {
+      setClassActionBusy(false);
+    }
+  };
+
+  const handleConfirmClassDelete = async () => {
+    if (!classAction || classAction.mode !== 'delete') return;
+    setClassActionBusy(true);
+    setClassActionError(null);
+    try {
+      await onDeleteClass(classAction.item.id);
+      setClassAction(null);
+    } catch (err) {
+      setClassActionError(err instanceof Error ? err.message : 'Could not delete the class.');
+    } finally {
+      setClassActionBusy(false);
+    }
+  };
+
+  const handleSaveAttendanceEdit = async (values: Record<string, string>) => {
+    if (!attendanceAction || attendanceAction.mode !== 'edit') return;
+    setAttendanceActionBusy(true);
+    setAttendanceActionError(null);
+    try {
+      await onUpdateTeacherAttendance(attendanceAction.record.id, {
+        date: values.date,
+        checkInTime: values.checkInTime.trim(),
+        checkOutTime: values.checkOutTime.trim() || undefined,
+        notes: values.notes.trim() || undefined,
+        status: values.status as TeacherAttendanceStatus
+      });
+      setAttendanceAction(null);
+    } catch (err) {
+      setAttendanceActionError(
+        err instanceof Error ? err.message : 'Could not update the attendance record.'
+      );
+    } finally {
+      setAttendanceActionBusy(false);
+    }
+  };
+
+  const handleConfirmAttendanceDelete = async () => {
+    if (!attendanceAction || attendanceAction.mode !== 'delete') return;
+    setAttendanceActionBusy(true);
+    setAttendanceActionError(null);
+    try {
+      await onDeleteTeacherAttendance(attendanceAction.record.id);
+      setAttendanceAction(null);
+    } catch (err) {
+      setAttendanceActionError(
+        err instanceof Error ? err.message : 'Could not delete the attendance record.'
+      );
+    } finally {
+      setAttendanceActionBusy(false);
+    }
+  };
+
+  const handleSavePaymentEdit = async (values: Record<string, string>) => {
+    if (!paymentAction || paymentAction.mode !== 'edit') return;
+    setPaymentActionBusy(true);
+    setPaymentActionError(null);
+    try {
+      await onUpdatePayment(paymentAction.payment.id, {
+        amount: Number(values.amount) || 0,
+        academicTerm: values.academicTerm.trim(),
+        paymentMethod: values.paymentMethod as FeePayment['paymentMethod'],
+        momoTransactionRef: values.momoTransactionRef.trim() || undefined,
+        payerName: values.payerName.trim(),
+        payerPhone: values.payerPhone.trim(),
+        paymentDate: values.paymentDate,
+        status: values.status as FeePayment['status']
+      });
+      setPaymentAction(null);
+    } catch (err) {
+      setPaymentActionError(err instanceof Error ? err.message : 'Could not update the payment.');
+    } finally {
+      setPaymentActionBusy(false);
+    }
+  };
+
+  const handleConfirmPaymentDelete = async () => {
+    if (!paymentAction || paymentAction.mode !== 'delete') return;
+    setPaymentActionBusy(true);
+    setPaymentActionError(null);
+    try {
+      await onDeletePayment(paymentAction.payment.id);
+      setPaymentAction(null);
+    } catch (err) {
+      setPaymentActionError(err instanceof Error ? err.message : 'Could not delete the payment.');
+    } finally {
+      setPaymentActionBusy(false);
+    }
+  };
+
+  const staffEditFields: RecordEditField[] = [
+    { key: 'name', label: 'Full name', required: true },
+    { key: 'title', label: 'Title', required: true },
+    { key: 'email', label: 'Email address', type: 'email', required: true },
+    { key: 'phone', label: 'Phone' }
+  ];
+
+  const classEditFields: RecordEditField[] = [
+    { key: 'name', label: 'Class name', required: true },
+    { key: 'code', label: 'Class code' },
+    { key: 'kinyarwandaName', label: 'Kinyarwanda name' },
+    { key: 'ageRange', label: 'Age range' },
+    { key: 'teacherName', label: 'Lead teacher' },
+    { key: 'roomNumber', label: 'Classroom' },
+    { key: 'capacity', label: 'Capacity', type: 'number', min: 0 }
+  ];
+
+  const attendanceEditFields: RecordEditField[] = [
+    { key: 'date', label: 'Date', type: 'date', required: true },
+    { key: 'checkInTime', label: 'Check-in time', required: true },
+    { key: 'checkOutTime', label: 'Check-out time' },
+    {
+      key: 'status',
+      label: 'Status',
+      type: 'select',
+      options: [
+        { value: 'PENDING', label: 'Pending' },
+        { value: 'APPROVED', label: 'Approved' },
+        { value: 'REJECTED', label: 'Rejected' }
+      ]
+    },
+    { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true }
+  ];
+
+  const paymentEditFields: RecordEditField[] = [
+    { key: 'amount', label: 'Amount (RWF)', type: 'number', min: 0, required: true },
+    { key: 'paymentDate', label: 'Payment date', type: 'date', required: true },
+    {
+      key: 'paymentMethod',
+      label: 'Payment method',
+      type: 'select',
+      options: [
+        { value: 'MTN_MOMO', label: 'MTN MoMo' },
+        { value: 'AIRTEL_MONEY', label: 'Airtel Money' },
+        { value: 'BK_TRANSFER', label: 'BK Transfer' },
+        { value: 'CASH', label: 'Cash' }
+      ]
+    },
+    {
+      key: 'status',
+      label: 'Status',
+      type: 'select',
+      options: [
+        { value: 'VERIFIED', label: 'Verified' },
+        { value: 'PENDING', label: 'Pending' },
+        { value: 'RECONCILED', label: 'Reconciled' }
+      ]
+    },
+    { key: 'payerName', label: 'Payer name' },
+    { key: 'payerPhone', label: 'Payer phone' },
+    { key: 'academicTerm', label: 'Academic term' },
+    { key: 'momoTransactionRef', label: 'Transaction reference' }
+  ];
+
   const renderAttendanceActions = (rec: TeacherAttendanceRecord) => {
-    if (rec.status !== 'PENDING')
-      return <span className="text-[11px] text-slate-400">Reviewed</span>;
+    if (rec.status !== 'PENDING') {
+      return (
+        <div className="flex items-center justify-end gap-2">
+          <span className="text-[11px] text-slate-400">Reviewed</span>
+          <CardActions
+            onEdit={() => {
+              setAttendanceActionError(null);
+              setAttendanceAction({ mode: 'edit', record: rec });
+            }}
+            onDelete={() => {
+              setAttendanceActionError(null);
+              setAttendanceAction({ mode: 'delete', record: rec });
+            }}
+            editLabel="Edit attendance record"
+            deleteLabel="Delete attendance record"
+          />
+        </div>
+      );
+    }
     const busy = busyId === rec.id;
     return (
       <div className="flex items-center gap-2">
@@ -540,6 +871,18 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
           <X className="w-3.5 h-3.5" />
           Reject
         </button>
+        <CardActions
+          onEdit={() => {
+            setAttendanceActionError(null);
+            setAttendanceAction({ mode: 'edit', record: rec });
+          }}
+          onDelete={() => {
+            setAttendanceActionError(null);
+            setAttendanceAction({ mode: 'delete', record: rec });
+          }}
+          editLabel="Edit attendance record"
+          deleteLabel="Delete attendance record"
+        />
       </div>
     );
   };
@@ -791,10 +1134,24 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                           <p className="text-[11px] text-slate-500 truncate">{member.title}</p>
                         </div>
                       </div>
-                      <div className="text-right shrink-0">
-                        <Badge tone={member.role === 'ACCOUNTANT' ? 'blue' : 'orange'}>
-                          {roleLabel[member.role] ?? member.role}
-                        </Badge>
+                      <div className="flex flex-col items-end gap-1.5 shrink-0">
+                        <div className="flex items-center gap-2">
+                          <Badge tone={member.role === 'ACCOUNTANT' ? 'blue' : 'orange'}>
+                            {roleLabel[member.role] ?? member.role}
+                          </Badge>
+                          <CardActions
+                            onEdit={() => {
+                              setStaffActionError(null);
+                              setStaffAction({ mode: 'edit', member });
+                            }}
+                            onDelete={() => {
+                              setStaffActionError(null);
+                              setStaffAction({ mode: 'delete', member });
+                            }}
+                            editLabel={`Edit ${member.name}`}
+                            deleteLabel={`Delete ${member.name}`}
+                          />
+                        </div>
                         <p className="flex items-center justify-end gap-1 text-[10px] text-slate-400 mt-1">
                           <Mail className="w-3 h-3" />
                           <span className="truncate max-w-[140px]">{member.email}</span>
@@ -993,6 +1350,62 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
             bodyClassName="p-4 sm:p-5"
           >
             <form onSubmit={handleRegisterStudent} className="space-y-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-center gap-3">
+                  {studentForm.photoUrl ? (
+                    <img
+                      src={studentForm.photoUrl}
+                      alt="New student preview"
+                      className="w-14 h-[4.5rem] shrink-0 rounded-lg border-2 border-orange-200 object-cover bg-white"
+                    />
+                  ) : (
+                    <span className="w-14 h-[4.5rem] shrink-0 rounded-lg border-2 border-dashed border-slate-300 bg-white text-slate-400 flex items-center justify-center">
+                      <ImagePlus className="w-5 h-5" />
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-slate-800">Student photo</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Attach a clear portrait for the profile and bulletin.
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <label
+                        className={cx(
+                          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-[11px] font-semibold text-slate-700 transition-colors',
+                          studentPhotoBusy || studentBusy
+                            ? 'opacity-60 cursor-wait'
+                            : 'cursor-pointer hover:bg-orange-50 hover:text-orange-700'
+                        )}
+                      >
+                        {studentPhotoBusy ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <ImagePlus className="w-3.5 h-3.5" />
+                        )}
+                        {studentForm.photoUrl ? 'Change photo' : 'Upload photo'}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          disabled={studentPhotoBusy || studentBusy}
+                          onChange={(event) => void handleStudentPhotoChange(event)}
+                        />
+                      </label>
+                      {studentForm.photoUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setStudentForm((f) => ({ ...f, photoUrl: '' }))}
+                          disabled={studentPhotoBusy || studentBusy}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-rose-200 bg-white text-[11px] font-semibold text-rose-600 hover:bg-rose-50 transition-colors disabled:opacity-50"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="First name">
                   <input
@@ -1253,9 +1666,23 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                     key={cls.id}
                     className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-3"
                   >
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] font-mono text-slate-500">{cls.code}</span>
-                      <Badge tone="slate">{cls.ageRange}</Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge tone="slate">{cls.ageRange}</Badge>
+                        <CardActions
+                          onEdit={() => {
+                            setClassActionError(null);
+                            setClassAction({ mode: 'edit', item: cls });
+                          }}
+                          onDelete={() => {
+                            setClassActionError(null);
+                            setClassAction({ mode: 'delete', item: cls });
+                          }}
+                          editLabel={`Edit ${cls.name}`}
+                          deleteLabel={`Delete ${cls.name}`}
+                        />
+                      </div>
                     </div>
                     <div>
                       <h3 className="text-base font-bold text-slate-800">{cls.name}</h3>
@@ -1467,9 +1894,23 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                           {p.receiptNumber} · {p.paymentMethod.replace(/_/g, ' ')} · {p.paymentDate}
                         </p>
                       </div>
-                      <span className="shrink-0 text-sm font-bold text-emerald-600">
-                        {formatRwf(p.amount)}
-                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-sm font-bold text-emerald-600">
+                          {formatRwf(p.amount)}
+                        </span>
+                        <CardActions
+                          onEdit={() => {
+                            setPaymentActionError(null);
+                            setPaymentAction({ mode: 'edit', payment: p });
+                          }}
+                          onDelete={() => {
+                            setPaymentActionError(null);
+                            setPaymentAction({ mode: 'delete', payment: p });
+                          }}
+                          editLabel={`Edit payment ${p.receiptNumber}`}
+                          deleteLabel={`Delete payment ${p.receiptNumber}`}
+                        />
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1542,6 +1983,180 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
             setDeleteError(null);
           }}
           onConfirm={handleConfirmDeleteStudent}
+        />
+      )}
+
+      {staffAction?.mode === 'edit' && (
+        <RecordEditModal
+          key={staffAction.member.id}
+          title="Edit staff account"
+          subtitle={`${staffAction.member.name} · ${roleLabel[staffAction.member.role] ?? staffAction.member.role}`}
+          fields={staffEditFields}
+          initialValues={{
+            name: staffAction.member.name,
+            title: staffAction.member.title,
+            email: staffAction.member.email,
+            phone: staffAction.member.phone
+          }}
+          busy={staffActionBusy}
+          error={staffActionError}
+          onClose={() => {
+            setStaffAction(null);
+            setStaffActionError(null);
+          }}
+          onSave={handleSaveStaffEdit}
+        />
+      )}
+
+      {staffAction?.mode === 'delete' && (
+        <ConfirmDialog
+          title="Delete staff account"
+          message={
+            <>
+              Remove <strong>{staffAction.member.name}</strong> from the staff directory? Their
+              profile record will be deleted permanently.
+            </>
+          }
+          busy={staffActionBusy}
+          error={staffActionError}
+          onCancel={() => {
+            setStaffAction(null);
+            setStaffActionError(null);
+          }}
+          onConfirm={handleConfirmStaffDelete}
+        />
+      )}
+
+      {classAction?.mode === 'edit' && (
+        <RecordEditModal
+          key={classAction.item.id}
+          title="Edit class"
+          subtitle={`${classAction.item.name} · ${classAction.item.code}`}
+          fields={classEditFields}
+          initialValues={{
+            name: classAction.item.name,
+            code: classAction.item.code,
+            kinyarwandaName: classAction.item.kinyarwandaName,
+            ageRange: classAction.item.ageRange,
+            teacherName: classAction.item.teacherName,
+            roomNumber: classAction.item.roomNumber,
+            capacity: classAction.item.capacity
+          }}
+          busy={classActionBusy}
+          error={classActionError}
+          onClose={() => {
+            setClassAction(null);
+            setClassActionError(null);
+          }}
+          onSave={handleSaveClassEdit}
+        />
+      )}
+
+      {classAction?.mode === 'delete' && (
+        <ConfirmDialog
+          title="Delete class"
+          message={
+            <>
+              Delete <strong>{classAction.item.name}</strong>? Students currently assigned to this
+              class will remain in the register but will need to be reassigned.
+            </>
+          }
+          busy={classActionBusy}
+          error={classActionError}
+          onCancel={() => {
+            setClassAction(null);
+            setClassActionError(null);
+          }}
+          onConfirm={handleConfirmClassDelete}
+        />
+      )}
+
+      {attendanceAction?.mode === 'edit' && (
+        <RecordEditModal
+          key={attendanceAction.record.id}
+          title="Edit attendance record"
+          subtitle={`${attendanceAction.record.teacherName} · ${attendanceAction.record.date}`}
+          fields={attendanceEditFields}
+          initialValues={{
+            date: attendanceAction.record.date,
+            checkInTime: attendanceAction.record.checkInTime,
+            checkOutTime: attendanceAction.record.checkOutTime,
+            status: attendanceAction.record.status,
+            notes: attendanceAction.record.notes
+          }}
+          busy={attendanceActionBusy}
+          error={attendanceActionError}
+          onClose={() => {
+            setAttendanceAction(null);
+            setAttendanceActionError(null);
+          }}
+          onSave={handleSaveAttendanceEdit}
+        />
+      )}
+
+      {attendanceAction?.mode === 'delete' && (
+        <ConfirmDialog
+          title="Delete attendance record"
+          message={
+            <>
+              Delete the check-in record for{' '}
+              <strong>{attendanceAction.record.teacherName}</strong> on{' '}
+              {attendanceAction.record.date}? This cannot be undone.
+            </>
+          }
+          busy={attendanceActionBusy}
+          error={attendanceActionError}
+          onCancel={() => {
+            setAttendanceAction(null);
+            setAttendanceActionError(null);
+          }}
+          onConfirm={handleConfirmAttendanceDelete}
+        />
+      )}
+
+      {paymentAction?.mode === 'edit' && (
+        <RecordEditModal
+          key={paymentAction.payment.id}
+          title="Edit fee payment"
+          subtitle={`${paymentAction.payment.studentName} · ${paymentAction.payment.receiptNumber}`}
+          fields={paymentEditFields}
+          initialValues={{
+            amount: paymentAction.payment.amount,
+            paymentDate: paymentAction.payment.paymentDate,
+            paymentMethod: paymentAction.payment.paymentMethod,
+            status: paymentAction.payment.status,
+            payerName: paymentAction.payment.payerName,
+            payerPhone: paymentAction.payment.payerPhone,
+            academicTerm: paymentAction.payment.academicTerm,
+            momoTransactionRef: paymentAction.payment.momoTransactionRef
+          }}
+          busy={paymentActionBusy}
+          error={paymentActionError}
+          onClose={() => {
+            setPaymentAction(null);
+            setPaymentActionError(null);
+          }}
+          onSave={handleSavePaymentEdit}
+        />
+      )}
+
+      {paymentAction?.mode === 'delete' && (
+        <ConfirmDialog
+          title="Delete fee payment"
+          message={
+            <>
+              Delete the <strong>{formatRwf(paymentAction.payment.amount)}</strong> payment from{' '}
+              {paymentAction.payment.studentName}? The student's paid total and balance will be
+              adjusted automatically.
+            </>
+          }
+          busy={paymentActionBusy}
+          error={paymentActionError}
+          onCancel={() => {
+            setPaymentAction(null);
+            setPaymentActionError(null);
+          }}
+          onConfirm={handleConfirmPaymentDelete}
         />
       )}
     </div>

@@ -37,7 +37,10 @@ import {
 } from 'lucide-react';
 import { Badge, EmptyState, SectionCard, Tabs } from './ui';
 import {
+  CardActions,
   ConfirmDialog,
+  RecordEditField,
+  RecordEditModal,
   StudentEditModal,
   StudentEditValues,
   StudentRegisterTable
@@ -51,11 +54,25 @@ interface TeacherPortalProps {
   teacherAttendance: TeacherAttendanceRecord[];
   studentAttendance: StudentAttendanceRecord[];
   curriculum: CurriculumMaterial[];
+  schoolLogo?: string | null;
   onCheckIn: (notes: string) => Promise<void>;
   onSaveStudentAttendance: (records: Omit<StudentAttendanceRecord, 'id'>[]) => Promise<void>;
   onUpdateStudent: (id: string, values: StudentEditValues) => Promise<void>;
   onDeleteStudent: (id: string) => Promise<void>;
   onUploadCurriculum: (input: CurriculumUploadInput) => Promise<void>;
+  onUpdateCurriculum: (id: string, input: CurriculumUploadInput) => Promise<void>;
+  onDeleteCurriculum: (id: string) => Promise<void>;
+  onUpdateTeacherAttendance: (
+    id: string,
+    input: {
+      date: string;
+      checkInTime: string;
+      checkOutTime?: string;
+      notes?: string;
+      status: TeacherAttendanceRecord['status'];
+    }
+  ) => Promise<void>;
+  onDeleteTeacherAttendance: (id: string) => Promise<void>;
 }
 
 type Tab = 'CHECKIN' | 'ATTENDANCE' | 'STUDENTS' | 'CURRICULUM' | 'REPORTS';
@@ -88,11 +105,16 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   teacherAttendance,
   studentAttendance,
   curriculum,
+  schoolLogo,
   onCheckIn,
   onSaveStudentAttendance,
   onUpdateStudent,
   onDeleteStudent,
-  onUploadCurriculum
+  onUploadCurriculum,
+  onUpdateCurriculum,
+  onDeleteCurriculum,
+  onUpdateTeacherAttendance,
+  onDeleteTeacherAttendance
 }) => {
   const [tab, setTab] = useState<Tab>('CHECKIN');
 
@@ -111,6 +133,20 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const [deletingStudent, setDeletingStudent] = useState<Student | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const [curriculumAction, setCurriculumAction] = useState<{
+    mode: 'edit' | 'delete';
+    item: CurriculumMaterial;
+  } | null>(null);
+  const [curriculumActionBusy, setCurriculumActionBusy] = useState(false);
+  const [curriculumActionError, setCurriculumActionError] = useState<string | null>(null);
+
+  const [checkInAction, setCheckInAction] = useState<{
+    mode: 'edit' | 'delete';
+    record: TeacherAttendanceRecord;
+  } | null>(null);
+  const [checkInActionBusy, setCheckInActionBusy] = useState(false);
+  const [checkInActionError, setCheckInActionError] = useState<string | null>(null);
 
   const [upload, setUpload] = useState<CurriculumUploadInput>({
     title: '',
@@ -342,6 +378,139 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
     }
   };
 
+  const handleSaveCurriculumEdit = async (values: Record<string, string>) => {
+    if (!curriculumAction || curriculumAction.mode !== 'edit') return;
+    setCurriculumActionBusy(true);
+    setCurriculumActionError(null);
+    try {
+      await onUpdateCurriculum(curriculumAction.item.id, {
+        title: values.title.trim(),
+        theme: values.theme.trim(),
+        classLevel: values.classLevel as CurriculumUploadInput['classLevel'],
+        className: values.className.trim(),
+        subject: values.subject as CurriculumUploadInput['subject'],
+        fileFormat: values.fileFormat as CurriculumUploadInput['fileFormat'],
+        fileSize: values.fileSize.trim(),
+        downloadUrl: values.downloadUrl.trim(),
+        weekNumber: Number(values.weekNumber) || 1,
+        term: values.term.trim(),
+        uploadedByTeacherName: curriculumAction.item.uploadedByTeacherName,
+        description: values.description.trim()
+      });
+      setCurriculumAction(null);
+    } catch (err) {
+      setCurriculumActionError(
+        err instanceof Error ? err.message : 'Could not update the curriculum material.'
+      );
+    } finally {
+      setCurriculumActionBusy(false);
+    }
+  };
+
+  const handleConfirmCurriculumDelete = async () => {
+    if (!curriculumAction || curriculumAction.mode !== 'delete') return;
+    setCurriculumActionBusy(true);
+    setCurriculumActionError(null);
+    try {
+      await onDeleteCurriculum(curriculumAction.item.id);
+      setCurriculumAction(null);
+    } catch (err) {
+      setCurriculumActionError(
+        err instanceof Error ? err.message : 'Could not delete the curriculum material.'
+      );
+    } finally {
+      setCurriculumActionBusy(false);
+    }
+  };
+
+  const handleSaveCheckInEdit = async (values: Record<string, string>) => {
+    if (!checkInAction || checkInAction.mode !== 'edit') return;
+    setCheckInActionBusy(true);
+    setCheckInActionError(null);
+    try {
+      await onUpdateTeacherAttendance(checkInAction.record.id, {
+        date: values.date,
+        checkInTime: values.checkInTime.trim(),
+        checkOutTime: values.checkOutTime.trim() || undefined,
+        notes: values.notes.trim() || undefined,
+        status: checkInAction.record.status
+      });
+      setCheckInAction(null);
+    } catch (err) {
+      setCheckInActionError(
+        err instanceof Error ? err.message : 'Could not update the check-in record.'
+      );
+    } finally {
+      setCheckInActionBusy(false);
+    }
+  };
+
+  const handleConfirmCheckInDelete = async () => {
+    if (!checkInAction || checkInAction.mode !== 'delete') return;
+    setCheckInActionBusy(true);
+    setCheckInActionError(null);
+    try {
+      await onDeleteTeacherAttendance(checkInAction.record.id);
+      setCheckInAction(null);
+    } catch (err) {
+      setCheckInActionError(
+        err instanceof Error ? err.message : 'Could not delete the check-in record.'
+      );
+    } finally {
+      setCheckInActionBusy(false);
+    }
+  };
+
+  const checkInEditFields: RecordEditField[] = [
+    { key: 'date', label: 'Date', type: 'date', required: true },
+    { key: 'checkInTime', label: 'Check-in time', required: true },
+    { key: 'checkOutTime', label: 'Check-out time' },
+    { key: 'notes', label: 'Notes', type: 'textarea', fullWidth: true }
+  ];
+
+  const curriculumEditFields: RecordEditField[] = [
+    { key: 'title', label: 'Title', required: true, fullWidth: true },
+    {
+      key: 'subject',
+      label: 'Subject',
+      type: 'select',
+      options: [
+        'Kinyarwanda',
+        'English',
+        'Early Numeracy',
+        'Creative Arts & Music',
+        'Social & Environmental',
+        'Physical Play'
+      ].map((subject) => ({ value: subject, label: subject }))
+    },
+    {
+      key: 'fileFormat',
+      label: 'File format',
+      type: 'select',
+      options: ['PDF', 'IMAGE', 'AUDIO', 'DOC'].map((format) => ({
+        value: format,
+        label: format
+      }))
+    },
+    {
+      key: 'classLevel',
+      label: 'Class level',
+      type: 'select',
+      options: [
+        { value: 'BABY_CLASS', label: 'Baby class' },
+        { value: 'MIDDLE_CLASS', label: 'Middle class' },
+        { value: 'TOP_CLASS', label: 'Top class' }
+      ]
+    },
+    { key: 'className', label: 'Class name' },
+    { key: 'theme', label: 'Theme' },
+    { key: 'term', label: 'Term' },
+    { key: 'weekNumber', label: 'Week', type: 'number', min: 1 },
+    { key: 'fileSize', label: 'File size', placeholder: 'e.g. 1.2 MB' },
+    { key: 'downloadUrl', label: 'Download URL' },
+    { key: 'description', label: 'Description', type: 'textarea', fullWidth: true }
+  ];
+
   const Msg = ({ msg }: { msg: { type: 'ok' | 'err'; text: string } | null }) =>
     msg ? (
       <div
@@ -430,9 +599,23 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                       <p className="text-sm font-semibold text-slate-800">{r.date}</p>
                       <p className="text-[11px] text-slate-500">Check-in {r.checkInTime}</p>
                     </div>
-                    <Badge tone={r.status === 'APPROVED' ? 'emerald' : r.status === 'PENDING' ? 'amber' : 'rose'}>
-                      {r.status}
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge tone={r.status === 'APPROVED' ? 'emerald' : r.status === 'PENDING' ? 'amber' : 'rose'}>
+                        {r.status}
+                      </Badge>
+                      <CardActions
+                        onEdit={() => {
+                          setCheckInActionError(null);
+                          setCheckInAction({ mode: 'edit', record: r });
+                        }}
+                        onDelete={() => {
+                          setCheckInActionError(null);
+                          setCheckInAction({ mode: 'delete', record: r });
+                        }}
+                        editLabel="Edit check-in record"
+                        deleteLabel="Delete check-in record"
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -641,15 +824,29 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
             ) : (
               <div className="divide-y divide-slate-100">
                 {curriculum.map((m) => (
-                  <div key={m.id} className="p-4">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone="orange">{m.subject}</Badge>
-                      <span className="text-[10px] text-slate-400">
-                        Week {m.weekNumber} · {m.fileFormat}
-                      </span>
+                  <div key={m.id} className="p-4 flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge tone="orange">{m.subject}</Badge>
+                        <span className="text-[10px] text-slate-400">
+                          Week {m.weekNumber} · {m.fileFormat}
+                        </span>
+                      </div>
+                      <p className="text-sm font-semibold text-slate-800 mt-1.5">{m.title}</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{m.description}</p>
                     </div>
-                    <p className="text-sm font-semibold text-slate-800 mt-1.5">{m.title}</p>
-                    <p className="text-[11px] text-slate-500 mt-0.5">{m.description}</p>
+                    <CardActions
+                      onEdit={() => {
+                        setCurriculumActionError(null);
+                        setCurriculumAction({ mode: 'edit', item: m });
+                      }}
+                      onDelete={() => {
+                        setCurriculumActionError(null);
+                        setCurriculumAction({ mode: 'delete', item: m });
+                      }}
+                      editLabel={`Edit ${m.title}`}
+                      deleteLabel={`Delete ${m.title}`}
+                    />
                   </div>
                 ))}
               </div>
@@ -916,13 +1113,21 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                 <div className="h-2 bg-orange-500" />
                 <div className="p-5 sm:p-8 space-y-6">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b-2 border-orange-200 pb-4">
-                    <div className="flex items-center gap-3">
-                      <span className="w-12 h-12 shrink-0 rounded-xl bg-orange-500 flex items-center justify-center shadow-sm">
-                        <GraduationCap className="w-7 h-7 text-white" />
-                      </span>
-                      <div>
+                    <div className="flex items-center gap-3 min-w-0">
+                      {schoolLogo ? (
+                        <img
+                          src={schoolLogo}
+                          alt={`${SCHOOL_INFO.name} logo`}
+                          className="w-14 h-14 shrink-0 rounded-xl border border-orange-200 bg-white object-contain p-1 shadow-sm"
+                        />
+                      ) : (
+                        <span className="w-14 h-14 shrink-0 rounded-xl bg-orange-500 flex items-center justify-center shadow-sm">
+                          <GraduationCap className="w-8 h-8 text-white" />
+                        </span>
+                      )}
+                      <div className="min-w-0">
                         <h2 className="text-lg sm:text-xl font-extrabold text-slate-800">
-                          Irere Nursery School
+                          {SCHOOL_INFO.name}
                         </h2>
                         <p className="text-[11px] font-semibold text-orange-600">
                           Gasabo District, Kigali City
@@ -932,17 +1137,31 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                         </p>
                       </div>
                     </div>
-                    <div className="sm:text-right">
-                      <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-200 bg-orange-50 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-orange-700">
-                        <Award className="w-3.5 h-3.5" />
-                        Official Bulletin
-                      </span>
-                      <p className="mt-1.5 text-[11px] text-slate-600">
-                        Academic Year {SCHOOL_INFO.academicYear}
-                      </p>
-                      <p className="text-[11px] font-semibold text-slate-700">
-                        {SCHOOL_INFO.currentTerm}
-                      </p>
+                    <div className="flex items-center gap-3 sm:justify-end">
+                      {reportStudent.photoUrl ? (
+                        <img
+                          src={reportStudent.photoUrl}
+                          alt={`${reportStudent.firstName} ${reportStudent.lastName}`}
+                          className="w-16 h-20 shrink-0 rounded-lg border-2 border-orange-200 object-cover bg-slate-100 shadow-sm"
+                        />
+                      ) : (
+                        <span className="w-16 h-20 shrink-0 rounded-lg border-2 border-dashed border-orange-200 bg-orange-50 text-orange-700 text-lg font-extrabold flex items-center justify-center">
+                          {reportStudent.firstName[0]}
+                          {reportStudent.lastName[0]}
+                        </span>
+                      )}
+                      <div className="sm:text-right">
+                        <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-200 bg-orange-50 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-orange-700">
+                          <Award className="w-3.5 h-3.5" />
+                          Official Bulletin
+                        </span>
+                        <p className="mt-1.5 text-[11px] text-slate-600">
+                          Academic Year {SCHOOL_INFO.academicYear}
+                        </p>
+                        <p className="text-[11px] font-semibold text-slate-700">
+                          {SCHOOL_INFO.currentTerm}
+                        </p>
+                      </div>
                     </div>
                   </div>
 
@@ -1183,6 +1402,95 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
             setDeleteError(null);
           }}
           onConfirm={handleConfirmDeleteStudent}
+        />
+      )}
+
+      {curriculumAction?.mode === 'edit' && (
+        <RecordEditModal
+          key={curriculumAction.item.id}
+          title="Edit curriculum material"
+          subtitle={`${curriculumAction.item.title} · Week ${curriculumAction.item.weekNumber}`}
+          fields={curriculumEditFields}
+          initialValues={{
+            title: curriculumAction.item.title,
+            subject: curriculumAction.item.subject,
+            fileFormat: curriculumAction.item.fileFormat,
+            classLevel: curriculumAction.item.classLevel,
+            className: curriculumAction.item.className,
+            theme: curriculumAction.item.theme,
+            term: curriculumAction.item.term,
+            weekNumber: curriculumAction.item.weekNumber,
+            fileSize: curriculumAction.item.fileSize,
+            downloadUrl: curriculumAction.item.downloadUrl,
+            description: curriculumAction.item.description
+          }}
+          busy={curriculumActionBusy}
+          error={curriculumActionError}
+          onClose={() => {
+            setCurriculumAction(null);
+            setCurriculumActionError(null);
+          }}
+          onSave={handleSaveCurriculumEdit}
+        />
+      )}
+
+      {curriculumAction?.mode === 'delete' && (
+        <ConfirmDialog
+          title="Delete curriculum material"
+          message={
+            <>
+              Delete <strong>{curriculumAction.item.title}</strong>? The published material will be
+              removed from the curriculum library.
+            </>
+          }
+          busy={curriculumActionBusy}
+          error={curriculumActionError}
+          onCancel={() => {
+            setCurriculumAction(null);
+            setCurriculumActionError(null);
+          }}
+          onConfirm={handleConfirmCurriculumDelete}
+        />
+      )}
+
+      {checkInAction?.mode === 'edit' && (
+        <RecordEditModal
+          key={checkInAction.record.id}
+          title="Edit check-in record"
+          subtitle={`${teacherName} · ${checkInAction.record.date}`}
+          fields={checkInEditFields}
+          initialValues={{
+            date: checkInAction.record.date,
+            checkInTime: checkInAction.record.checkInTime,
+            checkOutTime: checkInAction.record.checkOutTime,
+            notes: checkInAction.record.notes
+          }}
+          busy={checkInActionBusy}
+          error={checkInActionError}
+          onClose={() => {
+            setCheckInAction(null);
+            setCheckInActionError(null);
+          }}
+          onSave={handleSaveCheckInEdit}
+        />
+      )}
+
+      {checkInAction?.mode === 'delete' && (
+        <ConfirmDialog
+          title="Delete check-in record"
+          message={
+            <>
+              Delete your check-in record for <strong>{checkInAction.record.date}</strong>? This
+              cannot be undone.
+            </>
+          }
+          busy={checkInActionBusy}
+          error={checkInActionError}
+          onCancel={() => {
+            setCheckInAction(null);
+            setCheckInActionError(null);
+          }}
+          onConfirm={handleConfirmCheckInDelete}
         />
       )}
     </div>

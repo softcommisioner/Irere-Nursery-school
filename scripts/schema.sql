@@ -6,7 +6,7 @@
 -- UPDATE / DELETE payloads match without transformation errors.
 --
 -- Tables: classes, students, staff, teacher_attendance, student_attendance,
---         payments, ledger, curriculum, evaluations, feedback
+--         payments, ledger, curriculum, evaluations, feedback, school_settings
 --
 -- All tables are REAL writable tables (never views). Every table has:
 --   * a text primary key with a default UUID (most client inserts do not
@@ -66,6 +66,7 @@ create table if not exists public.students (
   parent_phone      text not null default '',
   parent_email      text not null default '',
   residence_village text not null default '',
+  photo_url         text,
   tuition_fee_term  numeric not null default 0,
   paid_amount       numeric not null default 0,
   balance           numeric not null default 0,
@@ -73,6 +74,9 @@ create table if not exists public.students (
   medical_notes     text,
   created_at        timestamptz not null default now()
 );
+
+-- Idempotent migration for databases created before profile photos existed.
+alter table public.students add column if not exists photo_url text;
 
 create index if not exists students_reg_number_idx on public.students (reg_number);
 create index if not exists students_class_id_idx on public.students (class_id);
@@ -238,6 +242,19 @@ create table if not exists public.feedback (
 create index if not exists feedback_parent_idx on public.feedback (parent_id);
 
 -- ----------------------------------------------------------------------------
+-- School branding / settings (single row used by the header and report cards)
+-- ----------------------------------------------------------------------------
+create table if not exists public.school_settings (
+  id         text primary key default 'main',
+  logo_url   text,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.school_settings (id)
+values ('main')
+on conflict (id) do nothing;
+
+-- ----------------------------------------------------------------------------
 -- Row Level Security + full read/write policies
 --
 -- Permissive policies are granted to BOTH `anon` and `authenticated` because
@@ -259,7 +276,8 @@ declare
     'ledger',
     'curriculum',
     'evaluations',
-    'feedback'
+    'feedback',
+    'school_settings'
   ];
 begin
   foreach rls_table in array rls_tables loop
@@ -304,5 +322,5 @@ commit;
 -- join pg_namespace n on n.oid = c.relnamespace
 -- where n.nspname = 'public' and relname in (
 --   'classes','students','staff','teacher_attendance','student_attendance',
---   'payments','ledger','curriculum','evaluations','feedback'
+--   'payments','ledger','curriculum','evaluations','feedback','school_settings'
 -- );

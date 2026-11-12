@@ -25,6 +25,7 @@ import { cx } from './ui';
 
 interface LandingHeroProps {
   slides: HeroSlide[];
+  schoolLogo?: string | null;
   onEnter: () => void;
   onSelectFiles: (files: File[]) => void;
   onResetSlides: () => void;
@@ -32,6 +33,7 @@ interface LandingHeroProps {
 
 export const LandingHero: React.FC<LandingHeroProps> = ({
   slides,
+  schoolLogo,
   onEnter,
   onSelectFiles,
   onResetSlides
@@ -125,9 +127,17 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
       <div className="relative z-20 min-h-screen flex flex-col">
         <header className="px-5 sm:px-8 py-5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-orange-500 flex items-center justify-center shadow-lg">
-              <GraduationCap className="w-6 h-6 text-white" />
-            </span>
+            {schoolLogo ? (
+              <img
+                src={schoolLogo}
+                alt={`${SCHOOL_INFO.name} logo`}
+                className="w-10 h-10 rounded-xl border border-white/20 bg-white object-contain p-1 shadow-lg"
+              />
+            ) : (
+              <span className="w-10 h-10 rounded-xl bg-orange-500 flex items-center justify-center shadow-lg">
+                <GraduationCap className="w-6 h-6 text-white" />
+              </span>
+            )}
             <div className="leading-tight">
               <p className="text-sm font-extrabold text-white">{SCHOOL_INFO.name}</p>
               <p className="text-[11px] text-slate-300">

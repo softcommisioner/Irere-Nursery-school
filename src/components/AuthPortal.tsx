@@ -35,6 +35,7 @@ interface AuthPortalProps {
   onAuthenticated: (session: AuthSession) => void;
   onBack: () => void;
   knownStudents: Student[];
+  schoolLogo?: string | null;
 }
 
 interface PortalMeta {
@@ -104,7 +105,8 @@ const ErrorNotice: React.FC<{ children: React.ReactNode }> = ({ children }) => (
 export const AuthPortal: React.FC<AuthPortalProps> = ({
   onAuthenticated,
   onBack,
-  knownStudents
+  knownStudents,
+  schoolLogo
 }) => {
   const [role, setRole] = useState<UserRole>('HEADMASTER');
   const [parentMode, setParentMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
@@ -240,9 +242,17 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
         <div className="max-w-6xl mx-auto px-4 sm:px-6">
           <div className="flex items-center justify-between gap-4 h-16">
             <div className="flex items-center gap-3 min-w-0">
-              <span className="w-10 h-10 shrink-0 rounded-xl bg-orange-500 flex items-center justify-center shadow-sm">
-                <GraduationCap className="w-6 h-6 text-white" />
-              </span>
+              {schoolLogo ? (
+                <img
+                  src={schoolLogo}
+                  alt={`${SCHOOL_INFO.name} logo`}
+                  className="w-10 h-10 shrink-0 rounded-xl border border-slate-200 bg-white object-contain p-1 shadow-sm"
+                />
+              ) : (
+                <span className="w-10 h-10 shrink-0 rounded-xl bg-orange-500 flex items-center justify-center shadow-sm">
+                  <GraduationCap className="w-6 h-6 text-white" />
+                </span>
+              )}
               <div className="leading-tight min-w-0">
                 <p className="text-sm font-extrabold text-slate-800 truncate">{SCHOOL_INFO.name}</p>
                 <p className="text-[11px] text-slate-500 truncate">

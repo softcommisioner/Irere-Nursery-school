@@ -18,6 +18,11 @@ import * as api from './services/api';
 import * as auth from './services/auth';
 import { AuthSession, ROLE_LABELS } from './services/auth';
 import { generateRegistrationNumber } from './utils/generators';
+import { imageFileToDataUrl } from './utils/images';
+import {
+  loadSchoolLogo as loadLocalSchoolLogo,
+  saveSchoolLogo as saveLocalSchoolLogo
+} from './services/branding';
 import { LandingHero } from './components/LandingHero';
 import { AuthPortal } from './components/AuthPortal';
 import { HeadmasterPortal } from './components/HeadmasterPortal';
@@ -25,14 +30,15 @@ import { AccountantPortal } from './components/AccountantPortal';
 import { TeacherPortal } from './components/TeacherPortal';
 import { ParentPortal } from './components/ParentPortal';
 import { SponsorPortal } from './components/SponsorPortal';
-import { ReadOnlyBadge } from './components/ui';
+import { ReadOnlyBadge, cx } from './components/ui';
 import {
   GraduationCap,
   Home,
   AlertCircle,
   RefreshCw,
   Loader2,
-  LogOut
+  LogOut,
+  ImagePlus
 } from 'lucide-react';
 
 type AppView = 'LANDING' | 'AUTH' | 'PORTALS';
@@ -44,6 +50,8 @@ export default function App() {
     () => auth.loadSession()?.linkedStudentReg
   );
   const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(HERO_SLIDES);
+  const [schoolLogo, setSchoolLogo] = useState<string | null>(() => loadLocalSchoolLogo());
+  const [logoBusy, setLogoBusy] = useState(false);
   const activeRole: UserRole = activeUser?.role ?? 'HEADMASTER';
 
   // All data is loaded live from Supabase. Records created or edited in any
@@ -78,7 +86,8 @@ export default function App() {
         ledgerList,
         curriculumList,
         feedbackList,
-        evaluationList
+        evaluationList,
+        schoolSettings
       ] = await Promise.all([
         api.getClasses(),
         api.getStudents(),
@@ -89,7 +98,8 @@ export default function App() {
         api.getLedger(),
         api.getCurriculum(),
         api.getFeedback(),
-        api.getEvaluations()
+        api.getEvaluations(),
+        api.getSchoolSettings()
       ]);
       setClasses(classList);
       setStudents(studentList);
@@ -101,6 +111,10 @@ export default function App() {
       setCurriculum(curriculumList);
       setFeedbacks(feedbackList);
       setEvaluations(evaluationList);
+      if (schoolSettings?.logoUrl) {
+        setSchoolLogo(schoolSettings.logoUrl);
+        saveLocalSchoolLogo(schoolSettings.logoUrl);
+      }
     } catch (err) {
       // Log the exact Supabase error (status / code / message) so missing
       // tables or schema mismatches can be pinpointed in the console. Table-
@@ -147,6 +161,38 @@ export default function App() {
     setActiveUser(null);
     setParentLookupReg(undefined);
     setView('AUTH');
+  };
+
+  const handleSchoolLogoChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setActionError(null);
+    setLogoBusy(true);
+    try {
+      const dataUrl = await imageFileToDataUrl(file, {
+        maxDimension: 512,
+        quality: 0.9,
+        preserveTransparency: true
+      });
+      saveLocalSchoolLogo(dataUrl);
+      setSchoolLogo(dataUrl);
+      try {
+        await api.updateSchoolLogo(dataUrl);
+      } catch (syncError) {
+        console.warn('[branding] The logo was saved locally but could not be synced:', syncError);
+        setActionError(
+          'Logo saved on this device. Run `npm run db:apply-schema` to share it with all users and report cards.'
+        );
+      }
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'Could not process the school logo image.'
+      );
+    } finally {
+      setLogoBusy(false);
+    }
   };
 
   const handleLookupStudent = (registrationNumber: string): boolean => {
@@ -460,12 +506,201 @@ export default function App() {
     }
   };
 
+  /* ----------------------- Management record mutations ------------------ */
+
+  const handleUpdateStaff = async (
+    id: string,
+    input: api.UpdateStaffInput
+  ): Promise<void> => {
+    setActionError(null);
+    try {
+      const updated = await api.updateStaff(id, input);
+      setStaff((prev) => prev.map((member) => (member.id === id ? { ...member, ...updated } : member)));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not update the staff account.'));
+      throw err;
+    }
+  };
+
+  const handleDeleteStaff = async (id: string): Promise<void> => {
+    setActionError(null);
+    try {
+      await api.deleteStaff(id);
+      setStaff((prev) => prev.filter((member) => member.id !== id));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not delete the staff account.'));
+      throw err;
+    }
+  };
+
+  const handleUpdateClass = async (
+    id: string,
+    input: api.UpdateClassInput
+  ): Promise<void> => {
+    setActionError(null);
+    try {
+      const updated = await api.updateClass(id, input);
+      setClasses((prev) => prev.map((cls) => (cls.id === id ? { ...cls, ...updated } : cls)));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not update the class.'));
+      throw err;
+    }
+  };
+
+  const handleDeleteClass = async (id: string): Promise<void> => {
+    setActionError(null);
+    try {
+      await api.deleteClass(id);
+      setClasses((prev) => prev.filter((cls) => cls.id !== id));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not delete the class.'));
+      throw err;
+    }
+  };
+
+  const handleUpdateTeacherAttendance = async (
+    id: string,
+    input: api.UpdateTeacherAttendanceInput
+  ): Promise<void> => {
+    setActionError(null);
+    try {
+      const updated = await api.updateTeacherAttendance(id, input);
+      setTeacherAttendance((prev) =>
+        prev.map((record) => (record.id === id ? { ...record, ...updated } : record))
+      );
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not update the attendance record.'));
+      throw err;
+    }
+  };
+
+  const handleDeleteTeacherAttendance = async (id: string): Promise<void> => {
+    setActionError(null);
+    try {
+      await api.deleteTeacherAttendance(id);
+      setTeacherAttendance((prev) => prev.filter((record) => record.id !== id));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not delete the attendance record.'));
+      throw err;
+    }
+  };
+
+  const syncStudentFeeBalance = async (studentId: string, paidDelta: number) => {
+    const student = students.find((s) => s.id === studentId);
+    if (!student) return;
+    const paidAmount = Math.max(0, (student.paidAmount ?? 0) + paidDelta);
+    const balance = Math.max(0, (student.tuitionFeeTerm ?? 0) - paidAmount);
+    try {
+      const updated = await api.updateStudentPaymentStatus(studentId, {
+        paidAmount,
+        balance
+      });
+      setStudents((prev) =>
+        prev.map((s) => (s.id === studentId ? { ...s, ...updated } : s))
+      );
+    } catch (err) {
+      setActionError(
+        `The payment was saved, but the student balance could not be updated: ${failMessage(
+          err,
+          'please reload to resync.'
+        )}`
+      );
+    }
+  };
+
+  const handleUpdatePayment = async (
+    id: string,
+    input: api.UpdateFeePaymentInput
+  ): Promise<void> => {
+    setActionError(null);
+    const existing = payments.find((payment) => payment.id === id);
+    try {
+      const updated = await api.updateFeePayment(id, input);
+      setPayments((prev) =>
+        prev.map((payment) => (payment.id === id ? { ...payment, ...updated } : payment))
+      );
+      if (existing && updated.amount !== existing.amount) {
+        await syncStudentFeeBalance(existing.studentId, updated.amount - existing.amount);
+      }
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not update the payment.'));
+      throw err;
+    }
+  };
+
+  const handleDeletePayment = async (id: string): Promise<void> => {
+    setActionError(null);
+    const existing = payments.find((payment) => payment.id === id);
+    try {
+      await api.deleteFeePayment(id);
+      setPayments((prev) => prev.filter((payment) => payment.id !== id));
+      if (existing) {
+        await syncStudentFeeBalance(existing.studentId, -existing.amount);
+      }
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not delete the payment.'));
+      throw err;
+    }
+  };
+
+  const handleUpdateLedgerEntry = async (
+    id: string,
+    input: api.UpdateLedgerEntryInput
+  ): Promise<void> => {
+    setActionError(null);
+    try {
+      const updated = await api.updateLedgerEntry(id, input);
+      setLedger((prev) => prev.map((entry) => (entry.id === id ? { ...entry, ...updated } : entry)));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not update the ledger entry.'));
+      throw err;
+    }
+  };
+
+  const handleDeleteLedgerEntry = async (id: string): Promise<void> => {
+    setActionError(null);
+    try {
+      await api.deleteLedgerEntry(id);
+      setLedger((prev) => prev.filter((entry) => entry.id !== id));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not delete the ledger entry.'));
+      throw err;
+    }
+  };
+
+  const handleUpdateCurriculum = async (
+    id: string,
+    input: api.UpdateCurriculumInput
+  ): Promise<void> => {
+    setActionError(null);
+    try {
+      const updated = await api.updateCurriculum(id, input);
+      setCurriculum((prev) => prev.map((item) => (item.id === id ? { ...item, ...updated } : item)));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not update the curriculum material.'));
+      throw err;
+    }
+  };
+
+  const handleDeleteCurriculum = async (id: string): Promise<void> => {
+    setActionError(null);
+    try {
+      await api.deleteCurriculum(id);
+      setCurriculum((prev) => prev.filter((item) => item.id !== id));
+    } catch (err) {
+      setActionError(failMessage(err, 'Could not delete the curriculum material.'));
+      throw err;
+    }
+  };
+
+
   /* ---------------------------------------------------------------------- */
 
   if (view === 'LANDING') {
     return (
       <LandingHero
         slides={heroSlides}
+        schoolLogo={schoolLogo}
         onEnter={() => setView(activeUser ? 'PORTALS' : 'AUTH')}
         onSelectFiles={handleSelectHeroImages}
         onResetSlides={handleResetHeroSlides}
@@ -479,6 +714,7 @@ export default function App() {
         onAuthenticated={handleAuthenticated}
         onBack={() => setView('LANDING')}
         knownStudents={students}
+        schoolLogo={schoolLogo}
       />
     );
   }
@@ -502,6 +738,14 @@ export default function App() {
             onUpdateStudent={handleUpdateStudent}
             onDeleteStudent={handleDeleteStudent}
             onCreateClass={handleCreateClass}
+            onUpdateStaff={handleUpdateStaff}
+            onDeleteStaff={handleDeleteStaff}
+            onUpdateClass={handleUpdateClass}
+            onDeleteClass={handleDeleteClass}
+            onUpdateTeacherAttendance={handleUpdateTeacherAttendance}
+            onDeleteTeacherAttendance={handleDeleteTeacherAttendance}
+            onUpdatePayment={handleUpdatePayment}
+            onDeletePayment={handleDeletePayment}
           />
         );
       case 'ACCOUNTANT':
@@ -514,6 +758,10 @@ export default function App() {
             currentUserName={activeUser.name}
             onRecordPayment={handleRecordPayment}
             onAddLedgerEntry={handleAddLedgerEntry}
+            onUpdatePayment={handleUpdatePayment}
+            onDeletePayment={handleDeletePayment}
+            onUpdateLedgerEntry={handleUpdateLedgerEntry}
+            onDeleteLedgerEntry={handleDeleteLedgerEntry}
           />
         );
       case 'TEACHER':
@@ -526,11 +774,16 @@ export default function App() {
             teacherAttendance={teacherAttendance}
             studentAttendance={studentAttendance}
             curriculum={curriculum}
+            schoolLogo={schoolLogo}
             onCheckIn={handleTeacherCheckIn}
             onSaveStudentAttendance={handleSaveStudentAttendance}
             onUpdateStudent={handleUpdateStudent}
             onDeleteStudent={handleDeleteStudent}
             onUploadCurriculum={handleUploadCurriculum}
+            onUpdateCurriculum={handleUpdateCurriculum}
+            onDeleteCurriculum={handleDeleteCurriculum}
+            onUpdateTeacherAttendance={handleUpdateTeacherAttendance}
+            onDeleteTeacherAttendance={handleDeleteTeacherAttendance}
           />
         );
       case 'PARENT':
@@ -569,9 +822,51 @@ export default function App() {
         <div className="max-w-6xl mx-auto px-4 sm:px-6">
           <div className="flex items-center justify-between gap-4 h-16">
             <div className="flex items-center gap-3 min-w-0">
-              <span className="w-10 h-10 shrink-0 rounded-xl bg-orange-500 flex items-center justify-center shadow-sm">
-                <GraduationCap className="w-6 h-6 text-white" />
-              </span>
+              {activeRole === 'HEADMASTER' ? (
+                <label
+                  title={schoolLogo ? 'Change the official school logo' : 'Upload the official school logo'}
+                  className={cx(
+                    'relative shrink-0 rounded-xl transition-opacity',
+                    logoBusy ? 'opacity-60 cursor-wait' : 'cursor-pointer'
+                  )}
+                >
+                  {schoolLogo ? (
+                    <img
+                      src={schoolLogo}
+                      alt={`${SCHOOL_INFO.name} logo`}
+                      className="w-10 h-10 rounded-xl border border-slate-200 bg-white object-contain p-1 shadow-sm"
+                    />
+                  ) : (
+                    <span className="w-10 h-10 rounded-xl bg-orange-500 flex items-center justify-center shadow-sm">
+                      <GraduationCap className="w-6 h-6 text-white" />
+                    </span>
+                  )}
+                  <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full border-2 border-white bg-slate-800 text-white flex items-center justify-center shadow-sm">
+                    {logoBusy ? (
+                      <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                    ) : (
+                      <ImagePlus className="w-2.5 h-2.5" />
+                    )}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={logoBusy}
+                    onChange={(event) => void handleSchoolLogoChange(event)}
+                  />
+                </label>
+              ) : schoolLogo ? (
+                <img
+                  src={schoolLogo}
+                  alt={`${SCHOOL_INFO.name} logo`}
+                  className="w-10 h-10 shrink-0 rounded-xl border border-slate-200 bg-white object-contain p-1 shadow-sm"
+                />
+              ) : (
+                <span className="w-10 h-10 shrink-0 rounded-xl bg-orange-500 flex items-center justify-center shadow-sm">
+                  <GraduationCap className="w-6 h-6 text-white" />
+                </span>
+              )}
               <div className="leading-tight min-w-0">
                 <p className="text-sm font-extrabold text-slate-800 truncate">{SCHOOL_INFO.name}</p>
                 <p className="text-[11px] text-slate-500 truncate">

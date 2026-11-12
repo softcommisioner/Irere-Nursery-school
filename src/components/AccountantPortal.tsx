@@ -29,6 +29,7 @@ import {
   StatCard,
   Tabs
 } from './ui';
+import { CardActions, ConfirmDialog, RecordEditField, RecordEditModal } from './StudentDialogs';
 
 interface AccountantPortalProps {
   classes: SchoolClass[];
@@ -38,6 +39,22 @@ interface AccountantPortalProps {
   currentUserName: string;
   onRecordPayment: (input: RecordPaymentInput) => Promise<void>;
   onAddLedgerEntry: (input: LedgerEntryInput) => Promise<void>;
+  onUpdatePayment: (
+    id: string,
+    input: {
+      amount: number;
+      academicTerm: string;
+      paymentMethod: PaymentMethod;
+      momoTransactionRef?: string;
+      payerName: string;
+      payerPhone: string;
+      paymentDate: string;
+      status: FeePayment['status'];
+    }
+  ) => Promise<void>;
+  onDeletePayment: (id: string) => Promise<void>;
+  onUpdateLedgerEntry: (id: string, input: LedgerEntryInput) => Promise<void>;
+  onDeleteLedgerEntry: (id: string) => Promise<void>;
 }
 
 type Tab = 'FEES' | 'LEDGER';
@@ -69,7 +86,11 @@ export const AccountantPortal: React.FC<AccountantPortalProps> = ({
   ledger,
   currentUserName,
   onRecordPayment,
-  onAddLedgerEntry
+  onAddLedgerEntry,
+  onUpdatePayment,
+  onDeletePayment,
+  onUpdateLedgerEntry,
+  onDeleteLedgerEntry
 }) => {
   const [tab, setTab] = useState<Tab>('FEES');
 
@@ -96,6 +117,20 @@ export const AccountantPortal: React.FC<AccountantPortalProps> = ({
   });
   const [ledgerBusy, setLedgerBusy] = useState(false);
   const [ledgerMsg, setLedgerMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  const [paymentAction, setPaymentAction] = useState<{
+    mode: 'edit' | 'delete';
+    payment: FeePayment;
+  } | null>(null);
+  const [paymentActionBusy, setPaymentActionBusy] = useState(false);
+  const [paymentActionError, setPaymentActionError] = useState<string | null>(null);
+
+  const [ledgerAction, setLedgerAction] = useState<{
+    mode: 'edit' | 'delete';
+    entry: LedgerEntry;
+  } | null>(null);
+  const [ledgerActionBusy, setLedgerActionBusy] = useState(false);
+  const [ledgerActionError, setLedgerActionError] = useState<string | null>(null);
 
   const totalBilled = students.reduce((a, s) => a + (s.tuitionFeeTerm ?? 0), 0);
   const totalCollected = students.reduce((a, s) => a + (s.paidAmount ?? 0), 0);
@@ -172,6 +207,146 @@ export const AccountantPortal: React.FC<AccountantPortalProps> = ({
       setLedgerBusy(false);
     }
   };
+
+  const handleSavePaymentEdit = async (values: Record<string, string>) => {
+    if (!paymentAction || paymentAction.mode !== 'edit') return;
+    setPaymentActionBusy(true);
+    setPaymentActionError(null);
+    try {
+      await onUpdatePayment(paymentAction.payment.id, {
+        amount: Number(values.amount) || 0,
+        academicTerm: values.academicTerm.trim(),
+        paymentMethod: values.paymentMethod as PaymentMethod,
+        momoTransactionRef: values.momoTransactionRef.trim() || undefined,
+        payerName: values.payerName.trim(),
+        payerPhone: values.payerPhone.trim(),
+        paymentDate: values.paymentDate,
+        status: values.status as FeePayment['status']
+      });
+      setPaymentAction(null);
+    } catch (err) {
+      setPaymentActionError(err instanceof Error ? err.message : 'Could not update the payment.');
+    } finally {
+      setPaymentActionBusy(false);
+    }
+  };
+
+  const handleConfirmPaymentDelete = async () => {
+    if (!paymentAction || paymentAction.mode !== 'delete') return;
+    setPaymentActionBusy(true);
+    setPaymentActionError(null);
+    try {
+      await onDeletePayment(paymentAction.payment.id);
+      setPaymentAction(null);
+    } catch (err) {
+      setPaymentActionError(err instanceof Error ? err.message : 'Could not delete the payment.');
+    } finally {
+      setPaymentActionBusy(false);
+    }
+  };
+
+  const handleSaveLedgerEdit = async (values: Record<string, string>) => {
+    if (!ledgerAction || ledgerAction.mode !== 'edit') return;
+    setLedgerActionBusy(true);
+    setLedgerActionError(null);
+    try {
+      await onUpdateLedgerEntry(ledgerAction.entry.id, {
+        entryDate: values.entryDate,
+        description: values.description.trim(),
+        type: values.type as LedgerEntry['type'],
+        category: values.category as LedgerCategory,
+        amount: Number(values.amount) || 0,
+        referenceDocNumber: values.referenceDocNumber.trim() || '—',
+        recordedBy: ledgerAction.entry.recordedBy,
+        paymentMethod: values.paymentMethod as PaymentMethod
+      });
+      setLedgerAction(null);
+    } catch (err) {
+      setLedgerActionError(
+        err instanceof Error ? err.message : 'Could not update the ledger entry.'
+      );
+    } finally {
+      setLedgerActionBusy(false);
+    }
+  };
+
+  const handleConfirmLedgerDelete = async () => {
+    if (!ledgerAction || ledgerAction.mode !== 'delete') return;
+    setLedgerActionBusy(true);
+    setLedgerActionError(null);
+    try {
+      await onDeleteLedgerEntry(ledgerAction.entry.id);
+      setLedgerAction(null);
+    } catch (err) {
+      setLedgerActionError(
+        err instanceof Error ? err.message : 'Could not delete the ledger entry.'
+      );
+    } finally {
+      setLedgerActionBusy(false);
+    }
+  };
+
+  const paymentEditFields: RecordEditField[] = [
+    { key: 'amount', label: 'Amount (RWF)', type: 'number', min: 0, required: true },
+    { key: 'paymentDate', label: 'Payment date', type: 'date', required: true },
+    {
+      key: 'paymentMethod',
+      label: 'Payment method',
+      type: 'select',
+      options: PAYMENT_METHODS.map((method) => ({
+        value: method,
+        label: method.replace(/_/g, ' ')
+      }))
+    },
+    {
+      key: 'status',
+      label: 'Status',
+      type: 'select',
+      options: [
+        { value: 'VERIFIED', label: 'Verified' },
+        { value: 'PENDING', label: 'Pending' },
+        { value: 'RECONCILED', label: 'Reconciled' }
+      ]
+    },
+    { key: 'payerName', label: 'Payer name' },
+    { key: 'payerPhone', label: 'Payer phone' },
+    { key: 'academicTerm', label: 'Academic term' },
+    { key: 'momoTransactionRef', label: 'Transaction reference' }
+  ];
+
+  const ledgerEditFields: RecordEditField[] = [
+    {
+      key: 'type',
+      label: 'Type',
+      type: 'select',
+      options: [
+        { value: 'INCOME', label: 'Income' },
+        { value: 'EXPENSE', label: 'Expense' }
+      ]
+    },
+    {
+      key: 'category',
+      label: 'Category',
+      type: 'select',
+      options: LEDGER_CATEGORIES.map((category) => ({
+        value: category,
+        label: category.replace(/_/g, ' ')
+      }))
+    },
+    { key: 'amount', label: 'Amount (RWF)', type: 'number', min: 0, required: true },
+    { key: 'entryDate', label: 'Date', type: 'date', required: true },
+    { key: 'description', label: 'Description', required: true, fullWidth: true },
+    { key: 'referenceDocNumber', label: 'Reference' },
+    {
+      key: 'paymentMethod',
+      label: 'Method',
+      type: 'select',
+      options: PAYMENT_METHODS.map((method) => ({
+        value: method,
+        label: method.replace(/_/g, ' ')
+      }))
+    }
+  ];
 
   const Msg: React.FC<{ msg: { type: 'ok' | 'err'; text: string } | null }> = ({ msg }) =>
     msg ? (
@@ -478,14 +653,28 @@ export const AccountantPortal: React.FC<AccountantPortalProps> = ({
                         {entry.entryDate} · {entry.referenceDocNumber} · {entry.recordedBy}
                       </p>
                     </div>
-                    <span
-                      className={`shrink-0 text-sm font-bold ${
-                        entry.type === 'INCOME' ? 'text-emerald-600' : 'text-rose-600'
-                      }`}
-                    >
-                      {entry.type === 'INCOME' ? '+' : '−'}
-                      {formatRwf(entry.amount)}
-                    </span>
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <span
+                        className={`text-sm font-bold ${
+                          entry.type === 'INCOME' ? 'text-emerald-600' : 'text-rose-600'
+                        }`}
+                      >
+                        {entry.type === 'INCOME' ? '+' : '−'}
+                        {formatRwf(entry.amount)}
+                      </span>
+                      <CardActions
+                        onEdit={() => {
+                          setLedgerActionError(null);
+                          setLedgerAction({ mode: 'edit', entry });
+                        }}
+                        onDelete={() => {
+                          setLedgerActionError(null);
+                          setLedgerAction({ mode: 'delete', entry });
+                        }}
+                        editLabel="Edit ledger entry"
+                        deleteLabel="Delete ledger entry"
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -503,15 +692,118 @@ export const AccountantPortal: React.FC<AccountantPortalProps> = ({
                         {p.receiptNumber} · {p.paymentMethod.replace('_', ' ')} · {p.paymentDate}
                       </p>
                     </div>
-                    <span className="shrink-0 text-sm font-bold text-emerald-600">
-                      {formatRwf(p.amount)}
-                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-sm font-bold text-emerald-600">
+                        {formatRwf(p.amount)}
+                      </span>
+                      <CardActions
+                        onEdit={() => {
+                          setPaymentActionError(null);
+                          setPaymentAction({ mode: 'edit', payment: p });
+                        }}
+                        onDelete={() => {
+                          setPaymentActionError(null);
+                          setPaymentAction({ mode: 'delete', payment: p });
+                        }}
+                        editLabel={`Edit payment ${p.receiptNumber}`}
+                        deleteLabel={`Delete payment ${p.receiptNumber}`}
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
             </SectionCard>
           )}
         </div>
+      )}
+      {paymentAction?.mode === 'edit' && (
+        <RecordEditModal
+          key={paymentAction.payment.id}
+          title="Edit fee payment"
+          subtitle={`${paymentAction.payment.studentName} · ${paymentAction.payment.receiptNumber}`}
+          fields={paymentEditFields}
+          initialValues={{
+            amount: paymentAction.payment.amount,
+            paymentDate: paymentAction.payment.paymentDate,
+            paymentMethod: paymentAction.payment.paymentMethod,
+            status: paymentAction.payment.status,
+            payerName: paymentAction.payment.payerName,
+            payerPhone: paymentAction.payment.payerPhone,
+            academicTerm: paymentAction.payment.academicTerm,
+            momoTransactionRef: paymentAction.payment.momoTransactionRef
+          }}
+          busy={paymentActionBusy}
+          error={paymentActionError}
+          onClose={() => {
+            setPaymentAction(null);
+            setPaymentActionError(null);
+          }}
+          onSave={handleSavePaymentEdit}
+        />
+      )}
+
+      {paymentAction?.mode === 'delete' && (
+        <ConfirmDialog
+          title="Delete fee payment"
+          message={
+            <>
+              Delete the <strong>{formatRwf(paymentAction.payment.amount)}</strong> payment from{' '}
+              {paymentAction.payment.studentName}? The student's paid total and balance will be
+              adjusted automatically.
+            </>
+          }
+          busy={paymentActionBusy}
+          error={paymentActionError}
+          onCancel={() => {
+            setPaymentAction(null);
+            setPaymentActionError(null);
+          }}
+          onConfirm={handleConfirmPaymentDelete}
+        />
+      )}
+
+      {ledgerAction?.mode === 'edit' && (
+        <RecordEditModal
+          key={ledgerAction.entry.id}
+          title="Edit ledger entry"
+          subtitle={`${ledgerAction.entry.type} · ${ledgerAction.entry.entryDate}`}
+          fields={ledgerEditFields}
+          initialValues={{
+            type: ledgerAction.entry.type,
+            category: ledgerAction.entry.category,
+            amount: ledgerAction.entry.amount,
+            entryDate: ledgerAction.entry.entryDate,
+            description: ledgerAction.entry.description,
+            referenceDocNumber: ledgerAction.entry.referenceDocNumber,
+            paymentMethod: ledgerAction.entry.paymentMethod
+          }}
+          busy={ledgerActionBusy}
+          error={ledgerActionError}
+          onClose={() => {
+            setLedgerAction(null);
+            setLedgerActionError(null);
+          }}
+          onSave={handleSaveLedgerEdit}
+        />
+      )}
+
+      {ledgerAction?.mode === 'delete' && (
+        <ConfirmDialog
+          title="Delete ledger entry"
+          message={
+            <>
+              Delete <strong>{ledgerAction.entry.description}</strong> (
+              {formatRwf(ledgerAction.entry.amount)}) from the financial ledger?
+            </>
+          }
+          busy={ledgerActionBusy}
+          error={ledgerActionError}
+          onCancel={() => {
+            setLedgerAction(null);
+            setLedgerActionError(null);
+          }}
+          onConfirm={handleConfirmLedgerDelete}
+        />
       )}
     </div>
   );
