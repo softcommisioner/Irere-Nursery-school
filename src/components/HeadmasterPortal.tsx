@@ -10,7 +10,6 @@ import {
 } from '../types';
 import { CreateClassInput, CreateStaffInput, CreateStudentInput } from '../services/api';
 import { ParentRegistrationInput } from '../services/auth';
-import { generatePassword } from '../utils/generators';
 import { imageFileToDataUrl } from '../utils/images';
 import {
   Users,
@@ -217,7 +216,15 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
     title: string;
     email: string;
     phone: string;
-  }>({ name: '', role: 'TEACHER', title: 'Lead Teacher', email: '', phone: '' });
+    password: string;
+  }>({
+    name: '',
+    role: 'TEACHER',
+    title: 'Lead Teacher',
+    email: '',
+    phone: '',
+    password: ''
+  });
   const [staffBusy, setStaffBusy] = useState(false);
   const [staffMsg, setStaffMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [credentials, setCredentials] = useState<{
@@ -232,6 +239,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
     name: '',
     email: '',
     phone: '',
+    password: '',
     linkedStudentReg: '',
     linkedStudentName: ''
   });
@@ -368,7 +376,14 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
       setStaffMsg({ tone: 'error', text: 'Full name and work email are required.' });
       return;
     }
-    const password = generatePassword();
+    if (staffForm.password.length < 8) {
+      setStaffMsg({
+        tone: 'error',
+        text: 'Assign a password with at least 8 characters.'
+      });
+      return;
+    }
+    const password = staffForm.password;
     setStaffBusy(true);
     try {
       const created = await onCreateStaff({
@@ -389,7 +404,14 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
         tone: 'ok',
         text: `${created.name} was added as ${roleLabel[created.role] ?? created.role}.`
       });
-      setStaffForm({ name: '', role: 'TEACHER', title: 'Lead Teacher', email: '', phone: '' });
+      setStaffForm({
+        name: '',
+        role: 'TEACHER',
+        title: 'Lead Teacher',
+        email: '',
+        phone: '',
+        password: ''
+      });
     } catch (err) {
       setStaffMsg({
         tone: 'error',
@@ -412,6 +434,13 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
       setParentMsg({ tone: 'error', text: 'Enter a valid parent email address.' });
       return;
     }
+    if (parentForm.password.length < 8) {
+      setParentMsg({
+        tone: 'error',
+        text: 'Assign a password with at least 8 characters.'
+      });
+      return;
+    }
     if (!parentForm.linkedStudentReg.trim()) {
       setParentMsg({
         tone: 'error',
@@ -425,7 +454,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
         student.regNumber.toLowerCase() ===
         parentForm.linkedStudentReg.trim().toLowerCase()
     );
-    const password = generatePassword();
+    const password = parentForm.password;
     setParentBusy(true);
     try {
       await onRegisterParent({
@@ -456,6 +485,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
         name: '',
         email: '',
         phone: '',
+        password: '',
         linkedStudentReg: '',
         linkedStudentName: ''
       });
@@ -1053,10 +1083,18 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                   onChange={(e) => setStaffForm((f) => ({ ...f, phone: e.target.value }))}
                 />
               </Field>
-              <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
-                <KeyRound className="w-3.5 h-3.5 text-orange-500" />
-                A secure password is generated automatically on submit.
-              </p>
+              <Field label="Account password">
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                  className={inputCls}
+                  placeholder="At least 8 characters"
+                  value={staffForm.password}
+                  onChange={(e) => setStaffForm((f) => ({ ...f, password: e.target.value }))}
+                />
+              </Field>
               <button
                 type="submit"
                 disabled={staffBusy}
@@ -1090,7 +1128,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                   </div>
                   <div className="rounded-lg bg-white border border-orange-200 p-3">
                     <p className="text-[10px] font-semibold text-slate-500 uppercase">
-                      Temporary password
+                      Assigned password
                     </p>
                     <div className="flex items-center justify-between gap-2 mt-1">
                       <span className="font-mono text-slate-800 break-all">
@@ -1202,6 +1240,18 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                   onChange={(e) => setParentForm((f) => ({ ...f, phone: e.target.value }))}
                 />
               </Field>
+              <Field label="Account password">
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                  className={inputCls}
+                  placeholder="At least 8 characters"
+                  value={parentForm.password}
+                  onChange={(e) => setParentForm((f) => ({ ...f, password: e.target.value }))}
+                />
+              </Field>
               <Field label="Child registration number">
                 <input
                   className={`${inputCls} font-mono uppercase`}
@@ -1230,10 +1280,6 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                   }
                 />
               </Field>
-              <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
-                <KeyRound className="w-3.5 h-3.5 text-orange-500" />
-                A secure password is generated automatically on submit.
-              </p>
               <button
                 type="submit"
                 disabled={parentBusy}
@@ -1269,7 +1315,7 @@ export const HeadmasterPortal: React.FC<HeadmasterPortalProps> = ({
                   </div>
                   <div className="rounded-lg bg-white border border-orange-200 p-3">
                     <p className="text-[10px] font-semibold text-slate-500 uppercase">
-                      Temporary password
+                      Assigned password
                     </p>
                     <div className="flex items-center justify-between gap-2 mt-1">
                       <span className="font-mono text-slate-800 break-all">
